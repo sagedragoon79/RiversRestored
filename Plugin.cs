@@ -153,144 +153,169 @@ namespace RiversRestored
 
             RiversEnabled = cat.CreateEntry("RiversEnabled", true,
                 display_name: "Rivers Enabled",
-                description: "Master toggle. When false, this mod is inert " +
-                             "and vanilla behavior (no rivers) resumes.");
+                description: "Master ON/OFF switch for the entire mod. " +
+                             "Set to false to disable everything and play with " +
+                             "vanilla behaviour (no rivers will generate).");
 
             NumRivers = cat.CreateEntry("NumRivers", 4,
                 display_name: "Number of Rivers",
-                description: "Attempts to generate this many rivers per map. " +
-                             "Actual count may be lower — the Voronoi validator " +
-                             "filters candidates by minPoints and endpoint " +
-                             "rules. Vanilla = 2 (but validation rejects all " +
-                             "on typical maps, producing 0 rivers).");
+                description: "How many rivers the mod will try to generate on each new map. " +
+                             "1-2 = sparse, 4 = balanced (default), 6+ = water-rich. " +
+                             "The actual number may be lower if a seed can't fit them all. " +
+                             "Vanilla = 2, but vanilla maps typically end up with 0 rivers " +
+                             "because the game's filters reject every candidate.");
 
             MinPoints = cat.CreateEntry("MinPoints", 15,
-                display_name: "Minimum River Control Points",
-                description: "Minimum control points per river. THIS IS THE " +
-                             "REAL GATE: vanilla = 40, which causes validation " +
-                             "to reject every Voronoi candidate on typical " +
-                             "seeds. Lowering to 15 allows shorter winding " +
-                             "rivers through. Set to 0 to keep vanilla (no rivers).");
+                display_name: "Minimum River Length",
+                description: "Minimum length each river must reach to be accepted, in " +
+                             "internal waypoints (each waypoint is roughly 1-3 cells of " +
+                             "river path). Lower = shorter rivers allowed. " +
+                             "15 = default (lets short winding rivers through). " +
+                             "Vanilla = 40, which is why vanilla maps almost never have rivers — " +
+                             "the rejection filter is too strict. Set to 0 for vanilla behaviour.");
 
             MinWidth = cat.CreateEntry("MinWidth", 0,
-                display_name: "Min River Width (cells)",
-                description: "Minimum river width in heightmap cells. Vanilla " +
-                             "range is 2-8. Set to 0 to keep vanilla default.");
+                display_name: "Min River Ribbon Width",
+                description: "Minimum width of the visible flowing-water ribbon (the animated " +
+                             "stream effect that flows down the river). Vanilla picks a width " +
+                             "between 2 and 8 cells per river. " +
+                             "0 = use vanilla. Set 4+ to force every river to be at least medium width.");
 
             MaxWidth = cat.CreateEntry("MaxWidth", 0,
-                display_name: "Max River Width (cells)",
-                description: "Maximum river width in heightmap cells. Vanilla " +
-                             "range is 2-8. Set to 0 to keep vanilla default.");
+                display_name: "Max River Ribbon Width",
+                description: "Maximum width of the visible flowing-water ribbon. " +
+                             "Vanilla picks between 2 and 8 cells. " +
+                             "0 = use vanilla. Set 6+ to allow some grand rivers in the mix.");
 
             MinDepth = cat.CreateEntry("MinDepth", -1f,
-                display_name: "Min River Depth (world units)",
-                description: "Minimum river depth in world units. Vanilla " +
-                             "range is 0.25-10. Set to -1 to keep vanilla default.");
+                display_name: "Min River Depth (legacy, mostly unused)",
+                description: "An internal depth setting from FF's original river system. " +
+                             "Has limited visual effect since this mod's actual carve depth is " +
+                             "controlled by RiverTrenchDepth below. " +
+                             "Leave at -1 to use vanilla default.");
 
             MaxDepth = cat.CreateEntry("MaxDepth", -1f,
-                display_name: "Max River Depth (world units)",
-                description: "Maximum river depth in world units. Vanilla " +
-                             "range is 0.25-10. Set to -1 to keep vanilla default.");
+                display_name: "Max River Depth (legacy, mostly unused)",
+                description: "Companion to MinDepth above, also part of FF's original river system. " +
+                             "The visible depth of your rivers is controlled by RiverTrenchDepth, " +
+                             "not this. Leave at -1 to use vanilla default.");
 
             MarkWaterTypesAsRiverEnd = cat.CreateEntry("MarkWaterTypesAsRiverEnd", true,
-                display_name: "Mark WaterTypes as Valid River Endpoints",
-                description: "Sets WaterType.riverEndPoint = true on all loaded " +
-                             "WaterType ScriptableObjects. Lake + BorderOcean already " +
-                             "had this flag in shipped data; this also flips Pond and " +
-                             "LakeSmall. Necessary but, by itself, insufficient to " +
-                             "produce rivers on inland map types.");
+                display_name: "Allow Rivers to End in Any Water",
+                description: "When ON: rivers may end in any water body — ponds, small lakes, " +
+                             "large lakes, or the border ocean. " +
+                             "When OFF (vanilla): only Lakes and the Border Ocean count as valid " +
+                             "endpoints, which is why vanilla rivers often fail to spawn at all. " +
+                             "Leave ON for normal use.");
 
-            RiverInnerRadius = cat.CreateEntry("RiverInnerRadius", 2,
-                display_name: "River Inner Radius (cells)",
-                description: "Heightmap cells within this distance of centerline " +
-                             "get slammed to full trench depth. 2 = roughly 5-cell-wide " +
-                             "bed (vanilla scale). 3 = wider channel.");
+            RiverInnerRadius = cat.CreateEntry("RiverInnerRadius", 6,
+                display_name: "River Channel Width (full depth)",
+                description: "How wide the deep carved channel is, measured in cells " +
+                             "(each cell is roughly 2.5 metres). The riverbed is dug " +
+                             "down to full depth this far on each side of the river's " +
+                             "centerline. " +
+                             "3 = narrow stream (~7 cells across), " +
+                             "6 = wide visible river (default, ~13 cells across), " +
+                             "8+ = grand river. " +
+                             "Bump River Bank Width with this so banks don't get too steep.");
 
-            RiverOuterRadius = cat.CreateEntry("RiverOuterRadius", 5,
-                display_name: "River Outer Radius (cells)",
-                description: "Heightmap cells between inner and outer radius get a " +
-                             "smooth ramp from trench depth back up to terrain. 5 = " +
-                             "vanilla-ish bank width. Larger = gentler banks but may " +
-                             "trigger excess shoreline auto-paint on reload.");
+            RiverOuterRadius = cat.CreateEntry("RiverOuterRadius", 8,
+                display_name: "River Bank Width (slope to ground)",
+                description: "How far out the sloped banks extend before reaching " +
+                             "natural ground level, measured in cells from centerline. " +
+                             "The cells between Channel Width and Bank Width get a " +
+                             "smooth ramp from riverbed up to terrain. " +
+                             "(Bank Width − Channel Width) is the slope distance: " +
+                             "1 cell = sharp drop-off, 2-3 cells = natural slope (default), " +
+                             "5+ = very gradual sloping banks. Must be ≥ Channel Width.");
 
             RiverJitterAmplitude = cat.CreateEntry("RiverJitterAmplitude", 1.5f,
-                display_name: "River Jitter Amplitude (world units)",
-                description: "Perpendicular wiggle amplitude added between Voronoi " +
-                             "control points. 0 = straight Bresenham; 1.5 = subtle " +
-                             "meander; 5+ = strong snake.");
+                display_name: "River Meander Strength (metres)",
+                description: "How much rivers wiggle and snake between their main " +
+                             "waypoints, in metres of perpendicular offset. " +
+                             "0 = perfectly straight lines between waypoints (boring), " +
+                             "1.5 = subtle natural curves (default), " +
+                             "5+ = strong snaking. " +
+                             "High values can cause rivers to self-intersect on tight bends.");
 
             RiverJitterFrequency = cat.CreateEntry("RiverJitterFrequency", 0.6f,
-                display_name: "River Jitter Frequency",
-                description: "Wave count per Voronoi segment. 0.6 ≈ one and a bit " +
-                             "oscillations per segment.");
+                display_name: "River Meander Frequency",
+                description: "How many curves fit between each pair of main waypoints. " +
+                             "0.6 ≈ one and a bit curves per segment (default, looks natural). " +
+                             "Higher = more zigzaggy, lower = sweeping arcs. " +
+                             "Has no effect if Meander Strength is 0.");
 
             RiverSmoothPasses = cat.CreateEntry("RiverSmoothPasses", 2,
-                display_name: "River Bank Smooth Passes",
-                description: "Iterative 3×3 box-blur passes applied after carving. " +
-                             "Pangu's 'Shore Blend' equivalent. 0 = no smoothing, " +
-                             "2 = good default, 4 = gentler, 8 = very gentle. Each pass " +
-                             "adds ~10s of map-gen time on large maps.");
+                display_name: "Bank Smoothness",
+                description: "How many smoothing passes are applied to the riverbanks " +
+                             "after carving. Smooths out the staircase look from the " +
+                             "raw cell-by-cell carve. " +
+                             "0 = no smoothing (rough/blocky banks), " +
+                             "2 = good default, " +
+                             "4 = gentler, " +
+                             "8 = very gentle. " +
+                             "Each pass adds a couple seconds to map generation on large maps.");
 
             RiverTrenchDepth = cat.CreateEntry("RiverTrenchDepth", 2.0f,
-                display_name: "River Trench Depth (m below water)",
-                description: "How far below the water surface to carve the riverbed. " +
-                             "WaterPath's transparency shader uses (pos.y - terrain) / " +
-                             "pos.y as its alpha input — at outlets where pos.y is " +
-                             "clamped to waterHeight (~3.15m), shallow trenches give " +
-                             "near-zero alpha and the river renders patchy. " +
-                             "1.5m is the visibility floor; 2.0m default has comfortable " +
-                             "headroom; 3m+ produces dramatic canyons. Crate's vanilla " +
-                             "PaintRiverFunc carves 2-10m, so 2m matches their calibration.");
+                display_name: "River Depth (metres below water)",
+                description: "How deep below the water surface the riverbed is dug, " +
+                             "in metres. Affects how visibly 'wet' the river looks — " +
+                             "shallow rivers can render patchy or transparent. " +
+                             "1.5 = visibility floor (anything shallower may look thin), " +
+                             "2.0 = comfortable default, " +
+                             "3-4 = dramatic deeper rivers, " +
+                             "5+ = canyon-like. " +
+                             "Vanilla FF rivers carve 2-10m so this matches their calibration.");
 
             ForceCoastlineTerrain = cat.CreateEntry("ForceCoastlineTerrain", false,
-                display_name: "[Diag] Force Coastline Terrain Type",
-                description: "Forces TerrainGeneratorController.terrainType = Coastline " +
-                             "before generation. Bypasses the biome-theme UI restriction " +
-                             "(which seems to lock to Default for shipped themes). Use " +
-                             "this to test whether rivers spawn on Coastline maps but " +
-                             "not Default — would prove elevation/ocean-gradient is the " +
-                             "real gate.");
+                display_name: "[Diagnostic] Force Coastline Map Type",
+                description: "[Developer use only — leave OFF.] Forces every map to " +
+                             "the Coastline biome regardless of UI selection. " +
+                             "Was used during mod development to test rivers on different " +
+                             "biome types. Has no useful effect for normal play.");
 
             RiverRegisterAsWaterArea = cat.CreateEntry("RiverRegisterAsWaterArea", true,
-                display_name: "Register Rivers as WaterAreas (hybrid mode)",
-                description: "When enabled, each river is also added to FF's " +
-                             "_generationData.waterAreas list (the same list lakes/oceans " +
-                             "use). Pros: water plane covers the river polygon and is " +
-                             "saved/restored automatically by FF; FishingManager spawns " +
-                             "fishing nodes on rivers; no gen-vs-reload water mismatch. " +
-                             "The WaterPath ribbon still provides the flow animation on " +
-                             "top. Disable to fall back to ribbon-only rivers.");
+                display_name: "Treat Rivers as Real Water Bodies",
+                description: "When ON: rivers behave like proper bodies of water. Trees, " +
+                             "rocks, and animals don't spawn on river cells; villagers can " +
+                             "fish from rivers; the river has a flat water surface that " +
+                             "saves/reloads correctly. " +
+                             "When OFF: rivers are visual ribbons only — no fishing, " +
+                             "resources may spawn in the riverbed, no proper water plane. " +
+                             "Leave ON for normal play.");
 
-            RiverBlobRadius = cat.CreateEntry("RiverBlobRadius", 3,
-                display_name: "[v0.2] River Blob Stamp Radius (cells)",
-                description: "Disc-stamp radius (heightmap cells) used to build the " +
-                             "river WaterArea polygon. Many small stamps along the cp " +
-                             "path get merged transitively (Pangu pattern) into the " +
-                             "final river polygon. Default 3 matches RiverInnerRadius " +
-                             "so the polygon fills the carved trench bottom exactly. " +
-                             "Stamps are squarish (~7×7 bbox) — the shape Pangu's " +
-                             "manually-painted thin rivers use, which is proven to " +
-                             "survive save/reload.");
+            RiverBlobRadius = cat.CreateEntry("RiverBlobRadius", 6,
+                display_name: "Visible Water Width",
+                description: "Width of the visible water surface (the 'brown bed under " +
+                             "the flowing-water animation that you can fish in'), measured " +
+                             "in cells from centerline. " +
+                             "Default 6 matches Channel Width so the water surface fills " +
+                             "the carved riverbed exactly. " +
+                             "Set higher than Channel Width to make water spill out onto " +
+                             "the bank slope (river overflowing its banks). " +
+                             "Set lower for a clean carved-trench look with rocky shores.");
 
             RiverBlobStride = cat.CreateEntry("RiverBlobStride", 3,
-                display_name: "[v0.2] River Blob Stamp Stride (cells)",
-                description: "Spacing between disc stamps along the interpolated cp " +
-                             "path, in heightmap cells. Heavy overlap at default 3 " +
-                             "gives a smooth merged outline with no gaps even on " +
-                             "tight curves. Raise to 5+ for fewer stamps (faster " +
-                             "gen) at the risk of gaps where the path bends sharply.");
+                display_name: "Water Surface Density (advanced)",
+                description: "Internal setting that controls how densely the water-surface " +
+                             "polygon is built along the river path. Lower = smoother shape " +
+                             "with more building work, higher = faster generation but may " +
+                             "leave gaps on tight bends. " +
+                             "3 = default (heavy overlap, smooth even on sharp curves), " +
+                             "5+ = faster generation. " +
+                             "Don't change unless map-gen feels slow.");
 
             RiverFishingAreaMultiplier = cat.CreateEntry("RiverFishingAreaMultiplier", 4,
-                display_name: "River Fishing Area Multiplier",
-                description: "Multiplies the number of FishingArea entries that " +
-                             "appear in a Fishing Shack / Dock's local list when " +
-                             "those entries reference one of OUR river FishAreas. " +
-                             "FF's productivity calculation is area-count-based, " +
-                             "so 1 area = -50% productivity penalty. 4× lifts a " +
-                             "single-river shack to ~12 areas → above the bonus " +
-                             "threshold → 100% productivity. Vanilla lakes/oceans " +
-                             "are untouched (we tag river FishAreas by waterType " +
-                             "reference at construction time). 1 = disabled.");
+                display_name: "River Fishing Productivity Boost",
+                description: "Boosts how productive a Fishing Shack/Dock is when it's " +
+                             "placed next to a river (not lakes/ocean — those use vanilla " +
+                             "values). FF normally penalises shacks with few fishing zones, " +
+                             "and a single river typically only counts as one zone, leaving " +
+                             "river fishing weak. " +
+                             "1 = no boost (vanilla, river fishing feels weak), " +
+                             "4 = good balance (default, ~100% productivity for a river-side shack), " +
+                             "8+ = lush fishing economy. " +
+                             "Lakes and ocean fishing are unaffected.");
 
             // ── Harmony ───────────────────────────────────────────────────
             HarmonyInstance = new HarmonyLib.Harmony("SageDragoon.RiversRestored");
