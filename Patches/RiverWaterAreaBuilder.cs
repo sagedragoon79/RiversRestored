@@ -429,6 +429,127 @@ namespace RiversRestored.Patches
             }
         }
 
+        /// <summary>Walk the sidecar's cp data and stamp polygons directly,
+        /// bypassing <c>_generationData.rivers</c> (which FF clears on save-
+        /// load). Used by BTS03 postfix on reload to re-add the river
+        /// polygons that FF's loader didn't deserialize. Mirrors gen-time
+        /// <see cref="BuildAndAddForAllRivers"/> walk-and-stamp logic but
+        /// reads from sidecar data instead of FF's rivers list.</summary>
+        public static int BuildAndAddFromSidecar(TerrainGenerator tg,
+            List<RiverPersistence.RiverData> sidecarRivers)
+        {
+            try
+            {
+                if (!ResolveTypes()) return 0;
+                if (sidecarRivers == null || sidecarRivers.Count == 0) return 0;
+
+                int blobRadius = RiversRestoredMod.RiverBlobRadius?.Value ?? 3;
+                int blobStride = RiversRestoredMod.RiverBlobStride?.Value ?? 3;
+                if (blobRadius < 1) blobRadius = 1;
+                if (blobStride < 1) blobStride = 1;
+
+                var msField = AccessTools.Field(typeof(TerrainGenerator), "mapSettings");
+                var ms = msField?.GetValue(tg);
+                if (ms == null) { Log("BuildAndAddFromSidecar: mapSettings null"); return 0; }
+                var msType = ms.GetType();
+                int hmRes = (int)(msType.GetField("heightmapResolution")?.GetValue(ms) ?? 0);
+                int mapW = (int)(msType.GetField("width")?.GetValue(ms) ?? 0);
+                int mapD = (int)(msType.GetField("depth")?.GetValue(ms) ?? 0);
+                if (hmRes <= 0 || mapW <= 0 || mapD <= 0) return 0;
+
+                var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd == null) { Log("BuildAndAddFromSidecar: _generationData null"); return 0; }
+                var waterAreasField = gd.GetType().GetField("waterAreas",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var waterAreas = waterAreasField?.GetValue(gd) as IList;
+                if (waterAreas == null) { Log("BuildAndAddFromSidecar: waterAreas null"); return 0; }
+
+                var riverFallbackType = ResolveRiverWaterType(tg);
+                if (riverFallbackType == null) { Log("BuildAndAddFromSidecar: no WaterType"); return 0; }
+
+                int riversAdded = 0;
+                int totalStamps = 0;
+                int waterAreasBefore = waterAreas.Count;
+                for (int i = 0; i < sidecarRivers.Count; i++)
+                {
+                    var rd = sidecarRivers[i];
+                    if (rd == null || rd.Points.Count < 2) continue;
+
+                    int stamps = StampVector3Path(tg, waterAreas, rd.Points,
+                        hmRes, mapW, mapD, blobRadius, blobStride, riverFallbackType);
+                    if (stamps > 0)
+                    {
+                        riversAdded++;
+                        totalStamps += stamps;
+                        Log($"  sidecar river[{i}]: {rd.Points.Count} cps → {stamps} stamps merged");
+                    }
+                }
+
+                Log($"BuildAndAddFromSidecar: {riversAdded} river(s), {totalStamps} stamps " +
+                    $"(blobRadius={blobRadius}, blobStride={blobStride}). " +
+                    $"waterAreas {waterAreasBefore} → {waterAreas.Count}; bounds tracked: {RiverWaterAreaBounds.Count}");
+                return riversAdded;
+            }
+            catch (Exception ex)
+            {
+                Log($"BuildAndAddFromSidecar exception: {ex}");
+                return 0;
+            }
+        }
+
+        /// <summary>Walk a list of Vector3 cps (from sidecar) and stamp at
+        /// stride spacing. Same as <see cref="StampAlongPath"/> but reads
+        /// from RiverPersistence.PointData directly instead of via
+        /// reflection.</summary>
+        private static int StampVector3Path(TerrainGenerator tg, IList waterAreas,
+            List<RiverPersistence.PointData> cps,
+            int hmRes, int mapW, int mapD, int radius, int stride,
+            UnityEngine.Object riverFallbackType)
+        {
+            int stamps = 0;
+            int prevHx = -999, prevHz = -999;
+            bool havePrev = false;
+
+            for (int idx = 0; idx < cps.Count; idx++)
+            {
+                var p = cps[idx];
+                int hx = WorldToHmX(p.Pos.x, mapW, hmRes);
+                int hz = WorldToHmZ(p.Pos.z, mapD, hmRes);
+                RiverCpCells.Add(new CellCoord(hx, hz));
+
+                if (havePrev)
+                {
+                    int dx = hx - prevHx, dz = hz - prevHz;
+                    float dist = Mathf.Sqrt(dx * dx + dz * dz);
+                    int steps = Mathf.Max(1, Mathf.CeilToInt(dist / stride));
+                    for (int s = 1; s <= steps; s++)
+                    {
+                        float t = (float)s / steps;
+                        int sx = Mathf.RoundToInt(Mathf.Lerp(prevHx, hx, t));
+                        int sz = Mathf.RoundToInt(Mathf.Lerp(prevHz, hz, t));
+                        if (sx < 0 || sx >= hmRes || sz < 0 || sz >= hmRes) continue;
+                        if (AddWaterAreaWithPanguMerge(tg, waterAreas,
+                                sx, sz, radius, hmRes, riverFallbackType) >= 0)
+                            stamps++;
+                    }
+                }
+                else
+                {
+                    if (hx >= 0 && hx < hmRes && hz >= 0 && hz < hmRes)
+                    {
+                        if (AddWaterAreaWithPanguMerge(tg, waterAreas,
+                                hx, hz, radius, hmRes, riverFallbackType) >= 0)
+                            stamps++;
+                    }
+                }
+
+                prevHx = hx; prevHz = hz;
+                havePrev = true;
+            }
+            return stamps;
+        }
+
         /// <summary>Re-populate <see cref="RiverWaterAreaBounds"/> + <see cref="RiverCpCells"/>
         /// from saved sidecar river control points. Used on cold reload to
         /// bootstrap the bounds-tracking HashSet (which is in static memory

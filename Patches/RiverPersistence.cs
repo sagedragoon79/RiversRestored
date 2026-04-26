@@ -76,10 +76,14 @@ namespace RiversRestored.Patches
                     new[] { typeof(string), typeof(bool), typeof(bool) });
                 if (saveMI != null)
                 {
-                    var stub = typeof(RiverPersistence).GetMethod(nameof(SavePostfix),
+                    var preStub = typeof(RiverPersistence).GetMethod(nameof(SavePrefix),
                         BindingFlags.Static | BindingFlags.NonPublic);
-                    harmony.Patch(saveMI, postfix: new HarmonyMethod(stub));
-                    Log($"Hooked SaveManager.Save(string, bool, bool)");
+                    var postStub = typeof(RiverPersistence).GetMethod(nameof(SavePostfix),
+                        BindingFlags.Static | BindingFlags.NonPublic);
+                    harmony.Patch(saveMI,
+                        prefix: new HarmonyMethod(preStub),
+                        postfix: new HarmonyMethod(postStub));
+                    Log($"Hooked SaveManager.Save(string, bool, bool) — prefix dumps waterAreas, postfix writes sidecar");
                 }
                 else
                 {
@@ -230,28 +234,33 @@ namespace RiversRestored.Patches
                 int spawned = SpawnWaterPathsFromSidecar(riverData, tg);
                 Log($"BTS03 postfix: spawned {spawned} WaterPath visual(s) post-rebuild.");
 
-                // ── Re-populate the river-bounds HashSet from sidecar ────
-                // ResetForSceneLoad clears the HashSet on every scene
-                // transition (including save→reload), and a fresh game
-                // launch starts with it empty. Without this re-population
-                // ForceWaterPlaneRebuild (and FishingShackPatch's bounds
-                // matching) can't identify which WaterAreas are ours.
-                // v0.2: PopulateBoundsFromSidecar reads RiverBlobRadius/Stride
-                // from cfg directly to mirror gen-time stamping.
-                int reBoundsCount = RiverWaterAreaBuilder.PopulateBoundsFromSidecar(
-                    riverData, tg);
-                Log($"BTS03 postfix: re-registered {reBoundsCount} river bounds from sidecar");
+                // ── KEY DISCOVERY (2026-04-26 reload test): FF's load
+                // doesn't deserialize the saved waterAreas list — it
+                // regenerates the list from seed data. Saved count was 33
+                // (with our 2 entries), reloaded count was 36 (no entries
+                // of ours). So saving river polygons via FF's serializer
+                // is futile.
+                //
+                // Pangu's polygons survive across reload because Pangu
+                // does the same thing we now do here: re-add at runtime
+                // post-load. We populate sidecar cps via SaveSidecar,
+                // and on load — right here — we walk those cps and
+                // stamp blobs again, mirroring exactly what we do at
+                // gen post-Stage-50 timing.
+                //
+                // Walk the sidecar's cp data and stamp polygons directly —
+                // we don't need to reconstruct _generationData.rivers, just
+                // run the same walk-and-stamp pass we do at gen.
+                RiverWaterAreaBuilder.RiverWaterAreaBounds.Clear();
+                int reAdded = RiverWaterAreaBuilder.BuildAndAddFromSidecar(tg, riverData);
+                Log($"BTS03 postfix: re-added {reAdded} river polygon(s) post-load via walk-and-stamp.");
 
                 // ── Force WaterPlane rebuild ─────────────────────────────
-                // FF's load pipeline doesn't rebuild WaterChunk meshes from
-                // the saved waterAreas list — our river WaterAreas are
-                // present in _generationData.waterAreas after deserialization
-                // (verified by the diagnostic above), but the chunk
-                // GameObjects that render water-plane geometry weren't part
-                // of the scene save and never got rebuilt on load. Pangu
-                // hits the same situation when it merges lakes at runtime
-                // and explicitly calls WaterPlane.Rebuild afterwards.
-                // We do the same here.
+                // FF's load pipeline doesn't build WaterChunk meshes for
+                // the regenerated waterAreas list, AND our newly-added
+                // river polygons need fresh meshes. Mirrors Pangu's
+                // pattern of calling WaterPlane.Rebuild after a runtime
+                // polygon add.
                 ForceWaterPlaneRebuild(tg);
 
                 RestoredThisLoad = true;
@@ -263,6 +272,86 @@ namespace RiversRestored.Patches
         }
 
         // ── Save hook ───────────────────────────────────────────────────────
+        /// <summary>Prefix on SaveManager.Save — diagnostic dump of every
+        /// waterArea right before FF serializes the map. We log count + per-
+        /// entry summary (bbox, mask cells, waterType name, isOurs) so we can
+        /// see whether our river polygons are still alive at save time, or
+        /// whether some late stage stripped them between gen-add and save.
+        ///
+        /// If post-reload count &lt; pre-save count, FF's serializer strips
+        /// some entries → we need to fix the saved-data shape.
+        /// If pre-save count is already short → a late gen stage strips them
+        /// → we need to re-add or hook a later carrier.</summary>
+        private static void SavePrefix(object __instance, string savedGameFileNameNoExtension,
+                                         bool isHighMemoryAutoSave, bool isAutoSave)
+        {
+            try
+            {
+                var tg = RiverSettingsPatch.CachedGenerator;
+                if (tg == null) { Log("[SavePre] no cached TerrainGenerator"); return; }
+
+                var gdField = AccessTools.Field(typeof(TerrainGen.TerrainGenerator), "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd == null) { Log("[SavePre] _generationData null"); return; }
+                var waField = gd.GetType().GetField("waterAreas",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var was = waField?.GetValue(gd) as IList;
+                if (was == null) { Log("[SavePre] waterAreas null"); return; }
+
+                int beforeCount = was.Count;
+                int trackedBounds = RiverWaterAreaBuilder.RiverWaterAreaBounds.Count;
+
+                // Resolve WaterArea fields once
+                Type? waType = AccessTools.TypeByName("TerrainGen.TerrainGenerator+WaterArea");
+                if (waType == null) { Log("[SavePre] WaterArea type missing"); return; }
+                var fMinX = waType.GetField("minX");
+                var fMinZ = waType.GetField("minZ");
+                var fMaxX = waType.GetField("maxX");
+                var fMaxZ = waType.GetField("maxZ");
+
+                int oursPresent = 0;
+                if (fMinX != null && fMinZ != null && fMaxX != null && fMaxZ != null)
+                {
+                    for (int i = 0; i < was.Count; i++)
+                    {
+                        var entry = was[i];
+                        if (entry == null) continue;
+                        int minX = (int)fMinX.GetValue(entry);
+                        int minZ = (int)fMinZ.GetValue(entry);
+                        int maxX = (int)fMaxX.GetValue(entry);
+                        int maxZ = (int)fMaxZ.GetValue(entry);
+                        var key = new RiverWaterAreaBuilder.WaterAreaBoundsKey(minX, minZ, maxX, maxZ);
+                        if (RiverWaterAreaBuilder.RiverWaterAreaBounds.Contains(key)) oursPresent++;
+                    }
+                }
+
+                Log($"[SavePre] waterAreas.Count={beforeCount}  ours={oursPresent}/{trackedBounds}");
+
+                // ── Re-add stripped river polygons before FF serializes ────
+                // Diagnostic in v0.2 first reload showed waterAreas dropping
+                // from gen-time (33→36) back to 33 by save-prefix time —
+                // some late gen stage strips additions made by mods. By
+                // save-prefix all gen stages have run, so re-adding here
+                // means our polygons survive into the .map serialization.
+                if (oursPresent < trackedBounds && trackedBounds > 0)
+                {
+                    Log($"[SavePre] {trackedBounds - oursPresent} river polygon(s) stripped during gen — re-adding via walk-and-stamp before serialization.");
+                    RiverWaterAreaBuilder.RiverWaterAreaBounds.Clear();
+                    int reAdded = RiverWaterAreaBuilder.BuildAndAddForAllRivers(tg);
+                    int afterCount = was.Count;
+                    Log($"[SavePre] Re-add result: {reAdded} river polygon(s) re-stamped. waterAreas {beforeCount} → {afterCount}.");
+                }
+                else
+                {
+                    Log("[SavePre] All tracked river polygons already present — no re-add needed.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"SavePrefix exception: {ex}");
+            }
+        }
+
         /// <summary>Postfix on SaveManager.Save — write our river sidecar
         /// alongside FF's .map file.</summary>
         private static void SavePostfix(object __instance, string savedGameFileNameNoExtension,
@@ -1104,7 +1193,7 @@ namespace RiversRestored.Patches
         ///     chunks. This is exactly what Pangu uses (see line 430 in
         ///     Pangu_FF.decompiled.cs — WaterPlaneBuildWaterSharedMethod).
         /// </summary>
-        private static void ForceWaterPlaneRebuild(TerrainGenerator tg)
+        public static void ForceWaterPlaneRebuild(TerrainGenerator tg)
         {
             try
             {

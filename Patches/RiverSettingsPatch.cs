@@ -179,17 +179,70 @@ namespace RiversRestored.Patches
         /// Postfix on a late stage. Tries to carve rivers if Terrain is
         /// available. Safe to fire from many stages — carver bails silently
         /// when Terrain isn't ready, and is guarded against duplicate runs.
+        ///
+        /// Also dumps waterAreas.Count + ours-count so we can spot which
+        /// stage strips our additions (they vanish between Stage 38 add
+        /// and save). The __originalMethod parameter is supplied by Harmony
+        /// and lets us label which carrier fired.
         /// </summary>
-        private static void LateCarvePostfix(TerrainGenerator __instance)
+        private static void LateCarvePostfix(TerrainGenerator __instance, MethodBase __originalMethod)
         {
             if (!RiversRestoredMod.RiversEnabled.Value) return;
             try
             {
+                LogWaterAreaCount(__instance, __originalMethod?.Name ?? "?");
                 RiverCarver.CarveAllRivers(__instance);
             }
             catch (Exception ex)
             {
                 RiversRestoredMod.Log.Error($"[RR] LateCarvePostfix failed: {ex}");
+            }
+        }
+
+        /// <summary>Diagnostic: dump current waterAreas.Count + how many
+        /// of our tracked river bounds are still present in the list.
+        /// Reveals which gen stage strips our additions — the stage where
+        /// ours-count drops from N to 0 is the culprit.</summary>
+        private static void LogWaterAreaCount(TerrainGenerator tg, string stageName)
+        {
+            try
+            {
+                var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd == null) return;
+                var waField = gd.GetType().GetField("waterAreas",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var was = waField?.GetValue(gd) as System.Collections.IList;
+                if (was == null) return;
+
+                int total = was.Count;
+                int ours = 0;
+                Type? waType = AccessTools.TypeByName("TerrainGen.TerrainGenerator+WaterArea");
+                var fMinX = waType?.GetField("minX");
+                var fMinZ = waType?.GetField("minZ");
+                var fMaxX = waType?.GetField("maxX");
+                var fMaxZ = waType?.GetField("maxZ");
+                if (fMinX != null && fMinZ != null && fMaxX != null && fMaxZ != null)
+                {
+                    for (int i = 0; i < was.Count; i++)
+                    {
+                        var entry = was[i];
+                        if (entry == null) continue;
+                        int minX = (int)fMinX.GetValue(entry);
+                        int minZ = (int)fMinZ.GetValue(entry);
+                        int maxX = (int)fMaxX.GetValue(entry);
+                        int maxZ = (int)fMaxZ.GetValue(entry);
+                        var key = new RiverWaterAreaBuilder.WaterAreaBoundsKey(minX, minZ, maxX, maxZ);
+                        if (RiverWaterAreaBuilder.RiverWaterAreaBounds.Contains(key)) ours++;
+                    }
+                }
+                RiversRestoredMod.Log.Msg(
+                    $"[RR][StageDump] {stageName}: waterAreas.Count={total}  ours={ours}/" +
+                    $"{RiverWaterAreaBuilder.RiverWaterAreaBounds.Count}");
+            }
+            catch (Exception ex)
+            {
+                RiversRestoredMod.Log.Warning($"[RR] LogWaterAreaCount failed: {ex.Message}");
             }
         }
 
@@ -254,27 +307,9 @@ namespace RiversRestored.Patches
                 RiversRestoredMod.Log.Msg(
                     "[RR] <<< Stage 38 injection completed without exception.");
 
-                // ── Register rivers as WaterAreas EARLY ──────────────────────
-                // Adding to _generationData.waterAreas RIGHT AFTER Stage 38
-                // (before Stage 50, before tree/rock/animal placement stages)
-                // means FF's resource placement sees these as water and skips
-                // them. Previously this happened in LateCarvePostfix (Stage 70+),
-                // which was too late — resources had already landed on what
-                // was about to become river.
-                //
-                // v0.2: builder uses Pangu-style walk-and-stamp internally —
-                // many small disc polygons merged transitively. Reads
-                // RiverBlobRadius / RiverBlobStride from cfg.
-                if (RiversRestoredMod.RiverRegisterAsWaterArea?.Value ?? true)
-                {
-                    int added = RiverWaterAreaBuilder.BuildAndAddForAllRivers(__instance);
-                    if (added > 0)
-                    {
-                        RiversRestoredMod.Log.Msg(
-                            $"[RR] Registered {added} river polygon(s) as WaterAreas BEFORE resource placement " +
-                            "(prevents trees/rocks/animals on river cells).");
-                    }
-                }
+                // (v0.2 update: WaterArea registration moved from here to
+                // InjectStage60Postfix — see comment there. Stage 38 timing
+                // gets stripped by Stage 50's waterAreas rebuild.)
             }
             catch (Exception ex)
             {
@@ -325,6 +360,44 @@ namespace RiversRestored.Patches
                 // failure is expected; we do that ourselves below.
                 RiversRestoredMod.Log.Warning(
                     $"[RR] Stage 60 partial (expected): {inner.GetType().Name} at {inner.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}");
+            }
+
+            // ── v0.2: Register rivers as WaterAreas POST-Stage-50 ──────────
+            // KEY TIMING DISCOVERY (2026-04-26): Stage 50 (Water) rebuilds
+            // _generationData.waterAreas from its own data source, stripping
+            // any additions we made at Stage 38. Diagnostic log showed
+            // gen-time `5 → 6 (ours=2/2)` at Stage 40, then `6 (ours=0/2)`
+            // at SavePrefix — Stage 50 wiped our entries.
+            //
+            // User insight: Pangu's runtime-painted polygons survive save/
+            // reload because Pangu adds AFTER gen finishes. We mimic that
+            // here — the postfix on Stage 50's carrier fires AFTER Stage 50
+            // body has run, so adding now means our entries persist into
+            // serialization. Bonus: Stage 70 (Roads) and Stage 95 (Trees)
+            // run after this, so resource avoidance still works.
+            //
+            // We also call ForceWaterPlaneRebuild immediately to render the
+            // water plane meshes at gen-time — Stage 50 already did that
+            // pass for the polygons it knew about; ours just appeared, so
+            // we trigger a manual Pangu-pattern rebuild for them.
+            if (RiversRestoredMod.RiverRegisterAsWaterArea?.Value ?? true)
+            {
+                try
+                {
+                    int added = RiverWaterAreaBuilder.BuildAndAddForAllRivers(__instance);
+                    if (added > 0)
+                    {
+                        RiversRestoredMod.Log.Msg(
+                            $"[RR] Registered {added} river polygon(s) as WaterAreas POST-Stage-50 " +
+                            "(survives FF's gen rebuild — Pangu-pattern timing).");
+                        RiverPersistence.ForceWaterPlaneRebuild(__instance);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    RiversRestoredMod.Log.Warning(
+                        $"[RR] Post-Stage-50 WaterArea registration failed: {ex.Message}");
+                }
             }
 
             // Manual carve happens later — see LateCarvePostfix. The carver
