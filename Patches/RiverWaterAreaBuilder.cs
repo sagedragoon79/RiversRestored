@@ -256,32 +256,47 @@ namespace RiversRestored.Patches
 
                 const int padding = 1;
 
-                // 2) Find merge set transitively (Pangu pattern)
+                // 2) Find merge set — NON-transitive, bbox + cell adjacency.
+                //
+                // CRITICAL: we compare each candidate against the STAMP's
+                // bbox (sMin/sMax) — NOT the growing union's bbox. A
+                // transitive cascade with growing-bbox compare creates a
+                // chain reaction across map: stamp ∪ lake1 → bbox grows
+                // to include lake1 → lake2 (adjacent to lake1) gets pulled
+                // in → lake3 (adjacent to lake2) too → eventually the
+                // whole map merges into one super-polygon. v0.2 first cut
+                // hit this with `waterAreas 48 → 1` and broken fishing.
+                //
+                // Bbox overlap is a cheap pre-filter; cell adjacency is
+                // the precise check (a long-thin polygon's bbox might
+                // overlap our stamp without any of its true cells being
+                // anywhere near us).
                 var mergeIndices = new HashSet<int>();
                 int uMinX = sMinX, uMinZ = sMinZ, uMaxX = sMaxX, uMaxZ = sMaxZ;
-                bool grew = true;
-                while (grew)
+                for (int i = 0; i < waterAreas.Count; i++)
                 {
-                    grew = false;
-                    for (int i = 0; i < waterAreas.Count; i++)
-                    {
-                        if (mergeIndices.Contains(i)) continue;
-                        var entry = waterAreas[i];
-                        if (entry == null) continue;
-                        int eMinX = (int)_faMinX!.GetValue(entry);
-                        int eMinZ = (int)_faMinZ!.GetValue(entry);
-                        int eMaxX = (int)_faMaxX!.GetValue(entry);
-                        int eMaxZ = (int)_faMaxZ!.GetValue(entry);
-                        if (eMinX > uMaxX + padding || eMaxX < uMinX - padding ||
-                            eMinZ > uMaxZ + padding || eMaxZ < uMinZ - padding)
-                            continue;
-                        mergeIndices.Add(i);
-                        uMinX = Math.Min(uMinX, eMinX);
-                        uMinZ = Math.Min(uMinZ, eMinZ);
-                        uMaxX = Math.Max(uMaxX, eMaxX);
-                        uMaxZ = Math.Max(uMaxZ, eMaxZ);
-                        grew = true;
-                    }
+                    var entry = waterAreas[i];
+                    if (entry == null) continue;
+                    int eMinX = (int)_faMinX!.GetValue(entry);
+                    int eMinZ = (int)_faMinZ!.GetValue(entry);
+                    int eMaxX = (int)_faMaxX!.GetValue(entry);
+                    int eMaxZ = (int)_faMaxZ!.GetValue(entry);
+                    // Bbox pre-filter against STAMP's bbox + padding
+                    if (eMinX > sMaxX + padding || eMaxX < sMinX - padding ||
+                        eMinZ > sMaxZ + padding || eMaxZ < sMinZ - padding)
+                        continue;
+                    // Cell-adjacency precise check: does the polygon have
+                    // a true cell within (radius + padding) of stamp center?
+                    var ePts = _faPoints!.GetValue(entry) as bool[,];
+                    if (ePts == null) continue;
+                    if (!StampTouchesPolygon(cx, cz, radius, padding,
+                            ePts, eMinX, eMinZ, eMaxX, eMaxZ))
+                        continue;
+                    mergeIndices.Add(i);
+                    uMinX = Math.Min(uMinX, eMinX);
+                    uMinZ = Math.Min(uMinZ, eMinZ);
+                    uMaxX = Math.Max(uMaxX, eMaxX);
+                    uMaxZ = Math.Max(uMaxZ, eMaxZ);
                 }
 
                 // 3) Allocate union mask sized to merged bbox
@@ -612,6 +627,39 @@ namespace RiversRestored.Patches
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────
+        /// <summary>True iff the candidate polygon (mask + bounds) has a
+        /// true cell within (radius + padding) of stamp center (cx, cz).
+        /// Used as the precise adjacency check after the bbox pre-filter.
+        /// Stops the merge from chaining through faraway polygons whose
+        /// bbox happens to overlap a long-thin polygon's bbox without
+        /// actually being near our stamp.</summary>
+        private static bool StampTouchesPolygon(int cx, int cz, int radius, int padding,
+            bool[,] mask, int eMinX, int eMinZ, int eMaxX, int eMaxZ)
+        {
+            int rp = radius + padding;
+            int rp2 = rp * rp;
+            int pw = mask.GetLength(0), ph = mask.GetLength(1);
+            int minX = cx - rp, maxX = cx + rp;
+            int minZ = cz - rp, maxZ = cz + rp;
+            // Clip to polygon bounds
+            if (maxX < eMinX || minX > eMaxX || maxZ < eMinZ || minZ > eMaxZ) return false;
+            int x0 = Math.Max(minX, eMinX), x1 = Math.Min(maxX, eMaxX);
+            int z0 = Math.Max(minZ, eMinZ), z1 = Math.Min(maxZ, eMaxZ);
+            for (int z = z0; z <= z1; z++)
+            {
+                int dz = z - cz;
+                for (int x = x0; x <= x1; x++)
+                {
+                    int dx = x - cx;
+                    if (dx * dx + dz * dz > rp2) continue;
+                    int gx = x - eMinX, gz = z - eMinZ;
+                    if (gx < 0 || gx >= pw || gz < 0 || gz >= ph) continue;
+                    if (mask[gx, gz]) return true;
+                }
+            }
+            return false;
+        }
+
         private static bool IsMaskFilled(bool[,] mask, int gMinX, int gMinZ,
                                           int gMaxX, int gMaxZ, int x, int z)
         {
