@@ -236,9 +236,10 @@ namespace RiversRestored.Patches
                 // launch starts with it empty. Without this re-population
                 // ForceWaterPlaneRebuild (and FishingShackPatch's bounds
                 // matching) can't identify which WaterAreas are ours.
-                int innerRadius = RiversRestoredMod.RiverInnerRadius?.Value ?? 3;
+                // v0.2: PopulateBoundsFromSidecar reads RiverBlobRadius/Stride
+                // from cfg directly to mirror gen-time stamping.
                 int reBoundsCount = RiverWaterAreaBuilder.PopulateBoundsFromSidecar(
-                    riverData, tg, innerRadius);
+                    riverData, tg);
                 Log($"BTS03 postfix: re-registered {reBoundsCount} river bounds from sidecar");
 
                 // ── Force WaterPlane rebuild ─────────────────────────────

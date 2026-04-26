@@ -254,33 +254,24 @@ namespace RiversRestored.Patches
                 RiversRestoredMod.Log.Msg(
                     "[RR] <<< Stage 38 injection completed without exception.");
 
-                // ── Extend ribbon endpoints further into receiving water ─────
-                // Vanilla TerrainRiver.ExtendEndPoints (line 18062) inserts a
-                // single cp 150m past each original endpoint, in the direction
-                // the river was heading. We push that endpoint cp even further
-                // out so the WaterPath ribbon mesh covers more of the lake
-                // (or other receiving water body) at the river's mouth/source.
-                // Closes the visible junction seam between ribbon and lake
-                // water plane.
-                ExtendRibbonEndpoints(__instance);
-
                 // ── Register rivers as WaterAreas EARLY ──────────────────────
                 // Adding to _generationData.waterAreas RIGHT AFTER Stage 38
                 // (before Stage 50, before tree/rock/animal placement stages)
                 // means FF's resource placement sees these as water and skips
                 // them. Previously this happened in LateCarvePostfix (Stage 70+),
                 // which was too late — resources had already landed on what
-                // was about to become river. Innerradius=3 is a reasonable
-                // polygon footprint regardless of carve having happened or
-                // not (the polygon is purely a logical claim on the area).
+                // was about to become river.
+                //
+                // v0.2: builder uses Pangu-style walk-and-stamp internally —
+                // many small disc polygons merged transitively. Reads
+                // RiverBlobRadius / RiverBlobStride from cfg.
                 if (RiversRestoredMod.RiverRegisterAsWaterArea?.Value ?? true)
                 {
-                    int inner = RiversRestoredMod.RiverInnerRadius?.Value ?? 3;
-                    int added = RiverWaterAreaBuilder.BuildAndAddForAllRivers(__instance, inner);
+                    int added = RiverWaterAreaBuilder.BuildAndAddForAllRivers(__instance);
                     if (added > 0)
                     {
                         RiversRestoredMod.Log.Msg(
-                            $"[RR] Registered {added} river(s) as WaterAreas BEFORE resource placement " +
+                            $"[RR] Registered {added} river polygon(s) as WaterAreas BEFORE resource placement " +
                             "(prevents trees/rocks/animals on river cells).");
                     }
                 }
@@ -578,99 +569,6 @@ namespace RiversRestored.Patches
             catch (Exception ex)
             {
                 RiversRestoredMod.Log.Error($"[RR] DoOverride ({firedFrom}) failed: {ex}");
-            }
-        }
-
-        /// <summary>Push the first and last cps of each river further along
-        /// their endpoint direction, on top of vanilla's 150m extension.
-        /// Cleaner ribbon-into-lake transitions.
-        /// </summary>
-        private static void ExtendRibbonEndpoints(TerrainGenerator tg)
-        {
-            try
-            {
-                float extraExt = RiversRestoredMod.RiverRibbonExtraExtensionMeters?.Value ?? 0f;
-                if (extraExt <= 0.01f) return;
-
-                var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
-                var gd = gdField?.GetValue(tg);
-                if (gd == null) return;
-                var riversField = gd.GetType().GetField("rivers",
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                var rivers = riversField?.GetValue(gd) as System.Collections.IList;
-                if (rivers == null || rivers.Count == 0) return;
-
-                int riversExtended = 0;
-                foreach (var river in rivers)
-                {
-                    if (river == null) continue;
-                    var pointsField = river.GetType().GetField("points",
-                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    var points = pointsField?.GetValue(river) as System.Collections.IList;
-                    if (points == null || points.Count < 2) continue;
-
-                    int N = points.Count;
-
-                    // Front: push points[0] further past points[1].
-                    if (TryPushCpFurther(points, idx: 0, neighborIdx: 1, extraExt))
-                    {
-                        // succeeded
-                    }
-
-                    // Back: push points[N-1] further past points[N-2].
-                    if (N >= 2)
-                    {
-                        TryPushCpFurther(points, idx: N - 1, neighborIdx: N - 2, extraExt);
-                    }
-
-                    riversExtended++;
-                }
-
-                RiversRestoredMod.Log.Msg(
-                    $"[RR] Extended ribbon endpoints on {riversExtended} river(s) by {extraExt:F0}m " +
-                    "(further into receiving water bodies).");
-            }
-            catch (Exception ex)
-            {
-                RiversRestoredMod.Log.Warning($"[RR] ExtendRibbonEndpoints failed: {ex.Message}");
-            }
-        }
-
-        /// <summary>Push points[idx]'s pos further along the direction away
-        /// from points[neighborIdx] by extraMeters. Handles the boxed-struct
-        /// dance: TerrainRiver.ControlPoint is a struct, so we get a copy
-        /// when reading from the IList, mutate the copy's pos field, and
-        /// write it back via the indexer setter.</summary>
-        private static bool TryPushCpFurther(System.Collections.IList points,
-            int idx, int neighborIdx, float extraMeters)
-        {
-            try
-            {
-                if (idx < 0 || neighborIdx < 0 || idx >= points.Count || neighborIdx >= points.Count) return false;
-                object cp = points[idx];
-                object cpN = points[neighborIdx];
-                if (cp == null || cpN == null) return false;
-
-                var posField = cp.GetType().GetField("pos",
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (posField == null) return false;
-
-                UnityEngine.Vector3 posSelf = (UnityEngine.Vector3)posField.GetValue(cp);
-                UnityEngine.Vector3 posNb = (UnityEngine.Vector3)posField.GetValue(cpN);
-
-                UnityEngine.Vector3 dir = posSelf - posNb;
-                dir.y = 0f;
-                if (dir.sqrMagnitude < 0.0001f) return false;
-                dir.Normalize();
-
-                UnityEngine.Vector3 newPos = posSelf + dir * extraMeters;
-                posField.SetValue(cp, newPos);   // mutates the boxed copy
-                points[idx] = cp;                 // write the box back into the (struct) list
-                return true;
-            }
-            catch
-            {
-                return false;
             }
         }
 

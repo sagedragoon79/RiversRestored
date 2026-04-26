@@ -93,29 +93,26 @@ namespace RiversRestored
         /// ribbon-only rivers (no fishing, requires our manual respawn).</summary>
         public static MelonPreferences_Entry<bool> RiverRegisterAsWaterArea { get; private set; } = null!;
 
-        /// <summary>How many control points each river WaterArea polygon covers.
-        /// FF spawns fishing nodes per <c>WaterArea</c>, so registering each
-        /// river as one giant polygon gives sparse fishing (3-4 nodes for a
-        /// 395-cp river). Splitting the river into chunks of N cps creates
-        /// multiple smaller WaterAreas, each with its own fishing-node
-        /// allocation. Lower = more nodes (more fishing) but more save data.
-        /// 25 cps ≈ a 100m river segment ≈ 1 distinct fishing area each.</summary>
-        public static MelonPreferences_Entry<int> RiverWaterAreaChunkSize { get; private set; } = null!;
+        /// <summary>v0.2 disc-stamp radius in heightmap cells. Each stamp is
+        /// a small disc polygon added via <c>AddWaterAreaWithPanguMerge</c>;
+        /// stamps along a river path merge transitively into one big polygon
+        /// (Pangu pattern). Default 3 = matches <c>RiverInnerRadius</c> so
+        /// the merged polygon fills the carved trench bottom exactly.
+        /// Larger = wider river polygon but more cells to merge.</summary>
+        public static MelonPreferences_Entry<int> RiverBlobRadius { get; private set; } = null!;
+
+        /// <summary>v0.2 spacing between disc stamps in heightmap cells along
+        /// the interpolated cp path. Heavy overlap at default (3) gives a
+        /// smooth merged outline with no gaps even on tight curves. Raise
+        /// for fewer stamps (faster gen) at the risk of gaps where the
+        /// path bends sharply.</summary>
+        public static MelonPreferences_Entry<int> RiverBlobStride { get; private set; } = null!;
 
         /// <summary>How many duplicate FishingArea entries to add per
         /// river-tagged area in Fishing Shack / Dock CreateFishingAreas
         /// results. Pangu uses the same pattern for lakes. 1 = no boost
         /// (vanilla, fishing rivers feels weak); 4 = nice playable density.</summary>
         public static MelonPreferences_Entry<int> RiverFishingAreaMultiplier { get; private set; } = null!;
-
-        /// <summary>Extra meters to push the first and last river cps along
-        /// their endpoint direction, on TOP of vanilla's 150m
-        /// <c>TerrainRiver.ExtendEndPoints</c> extension. Helps the ribbon
-        /// mesh reach deeper into terminating lakes so the visual seam
-        /// between river ribbon and lake water plane closes up. 0 = vanilla
-        /// only. 100 = ribbon extends 250m past the river's true endpoints
-        /// (vanilla 150 + our 100). Negative values not recommended.</summary>
-        public static MelonPreferences_Entry<float> RiverRibbonExtraExtensionMeters { get; private set; } = null!;
 
         // ── Carve shape ─────────────────────────────────────────────────────
         /// <summary>Inner radius (heightmap cells) of the river trench.
@@ -264,27 +261,24 @@ namespace RiversRestored
                              "The WaterPath ribbon still provides the flow animation on " +
                              "top. Disable to fall back to ribbon-only rivers.");
 
-            RiverWaterAreaChunkSize = cat.CreateEntry("RiverWaterAreaChunkSize", 0,
-                display_name: "River WaterArea Chunk Size (control points)",
-                description: "Splits each river into multiple smaller WaterArea " +
-                             "polygons of N control points each. The intent was " +
-                             "to multiply fishing nodes by giving FF more polygons " +
-                             "to work with — but FF's FishArea allocator appears " +
-                             "to have a minimum-size threshold below which it " +
-                             "spawns ZERO fishing areas, so chunks that are too " +
-                             "small kill fishing entirely. Default 0 = one " +
-                             "WaterArea per river (works, sparse but reliable). " +
-                             "If you experiment with chunking, stay above ~80 cps.");
+            RiverBlobRadius = cat.CreateEntry("RiverBlobRadius", 3,
+                display_name: "[v0.2] River Blob Stamp Radius (cells)",
+                description: "Disc-stamp radius (heightmap cells) used to build the " +
+                             "river WaterArea polygon. Many small stamps along the cp " +
+                             "path get merged transitively (Pangu pattern) into the " +
+                             "final river polygon. Default 3 matches RiverInnerRadius " +
+                             "so the polygon fills the carved trench bottom exactly. " +
+                             "Stamps are squarish (~7×7 bbox) — the shape Pangu's " +
+                             "manually-painted thin rivers use, which is proven to " +
+                             "survive save/reload.");
 
-            RiverRibbonExtraExtensionMeters = cat.CreateEntry("RiverRibbonExtraExtensionMeters", 100f,
-                display_name: "River Ribbon Extra Endpoint Extension (m)",
-                description: "Extra meters to push first/last river control points along their " +
-                             "endpoint direction, on TOP of vanilla's built-in 150m " +
-                             "ExtendEndPoints extension. Pushes the WaterPath ribbon mesh " +
-                             "deeper into the receiving lake/source water body, closing the " +
-                             "visible seam between river ribbon and lake water plane. " +
-                             "0 = vanilla behavior. 100 = ribbon extends 250m past the river's " +
-                             "actual endpoints (150 vanilla + 100 ours).");
+            RiverBlobStride = cat.CreateEntry("RiverBlobStride", 3,
+                display_name: "[v0.2] River Blob Stamp Stride (cells)",
+                description: "Spacing between disc stamps along the interpolated cp " +
+                             "path, in heightmap cells. Heavy overlap at default 3 " +
+                             "gives a smooth merged outline with no gaps even on " +
+                             "tight curves. Raise to 5+ for fewer stamps (faster " +
+                             "gen) at the risk of gaps where the path bends sharply.");
 
             RiverFishingAreaMultiplier = cat.CreateEntry("RiverFishingAreaMultiplier", 4,
                 display_name: "River Fishing Area Multiplier",

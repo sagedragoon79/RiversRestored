@@ -641,27 +641,13 @@ namespace RiversRestored.Patches
                 _carved = true;
                 Log($"CarveAllRivers: DONE ({totalCells} cells across {rivers.Count} rivers)");
 
-                // (WaterArea registration happens earlier — see
-                // RiverSettingsPatch.InjectStage38Postfix. Doing it here
-                // would be too late: tree/rock/animal placement runs
-                // between Stage 38 and our LateCarvePostfix, so resources
-                // would already be on river cells.)
-
-                // ── Merge river WaterAreas with adjacent lakes ──────────────
-                // Lakes are generated in Stage 50 (after our Stage 38 add).
-                // Now (post-carve, very late in the pipeline) BOTH our river
-                // polygons AND lake polygons are in _generationData.waterAreas
-                // — exactly when Pangu does its MergeAndAddWaterArea pass.
-                // Merging eliminates the river-lake junction seam (one
-                // polygon = continuous water plane) AND adopts the lake's
-                // waterType (which is in waterSettings.lakeTypes → survives
-                // save/reload cleanly, fixing the post-reload chunk render).
-                if (RiversRestoredMod.RiverRegisterAsWaterArea?.Value ?? true)
-                {
-                    int merges = RiverWaterAreaBuilder.MergeRiverWaterAreasWithAdjacent(__instance);
-                    if (merges > 0)
-                        Log($"  → {merges} river-lake merge(s) applied");
-                }
+                // (WaterArea registration + Pangu-style merge happens earlier
+                // — see RiverSettingsPatch.InjectStage38Postfix → builder
+                // walk-and-stamp loop. Doing it here would be too late:
+                // tree/rock/animal placement runs between Stage 38 and our
+                // LateCarvePostfix, so resources would already be on river
+                // cells. v0.2: no separate post-pass merge — merge is inline
+                // per stamp via AddWaterAreaWithPanguMerge.)
             }
             catch (Exception ex)
             {
