@@ -157,8 +157,9 @@ namespace RiversRestored.Patches
                     var cps = cpsField?.GetValue(river) as IList;
                     if (cps == null || cps.Count < 2) continue;
 
-                    int riverStamps = StampAlongPath(tg, waterAreas, cps,
-                        hmRes, mapW, mapD, blobRadius, blobStride, riverFallbackType);
+                    var hmCps = ConvertReflectiveCpsToCells(cps, hmRes, mapW, mapD);
+                    int riverStamps = StampCellPath(tg, waterAreas, hmCps,
+                        hmRes, blobRadius, blobStride, riverFallbackType);
                     if (riverStamps > 0)
                     {
                         riversAdded++;
@@ -179,26 +180,28 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Walk through cps, interpolating intermediate stamp
-        /// positions at <paramref name="stride"/> cell spacing. Each
-        /// position becomes one disc-stamp call to
-        /// <see cref="AddWaterAreaWithPanguMerge"/>.</summary>
-        private static int StampAlongPath(TerrainGenerator tg, IList waterAreas, IList cps,
-            int hmRes, int mapW, int mapD, int radius, int stride,
+        /// <summary>Walk pre-converted heightmap-cell cps, interpolating
+        /// intermediate stamp positions at <paramref name="stride"/> cell
+        /// spacing. Each position becomes one disc-stamp call to
+        /// <see cref="AddWaterAreaWithPanguMerge"/>. This is the shared
+        /// stamp-loop core used by both gen-time
+        /// (<see cref="BuildAndAddForAllRivers"/>) and reload-time
+        /// (<see cref="BuildAndAddFromSidecar"/>) — they differ only in how
+        /// they extract cps from their input source, then both feed the
+        /// same converted cell list here.</summary>
+        private static int StampCellPath(TerrainGenerator tg, IList waterAreas,
+            List<CellCoord> hmCps, int hmRes, int radius, int stride,
             UnityEngine.Object riverFallbackType)
         {
             int stamps = 0;
             int prevHx = -999, prevHz = -999;
             bool havePrev = false;
 
-            for (int idx = 0; idx < cps.Count; idx++)
+            for (int i = 0; i < hmCps.Count; i++)
             {
-                var pt = cps[idx];
-                if (pt == null) continue;
-                if (!TryGetPointXZ(pt, out float wx, out float wz)) continue;
-                int hx = WorldToHmX(wx, mapW, hmRes);
-                int hz = WorldToHmZ(wz, mapD, hmRes);
-                RiverCpCells.Add(new CellCoord(hx, hz));
+                int hx = hmCps[i].X;
+                int hz = hmCps[i].Z;
+                RiverCpCells.Add(hmCps[i]);
 
                 if (havePrev)
                 {
@@ -216,20 +219,52 @@ namespace RiversRestored.Patches
                             stamps++;
                     }
                 }
-                else
+                else if (hx >= 0 && hx < hmRes && hz >= 0 && hz < hmRes)
                 {
-                    if (hx >= 0 && hx < hmRes && hz >= 0 && hz < hmRes)
-                    {
-                        if (AddWaterAreaWithPanguMerge(tg, waterAreas,
-                                hx, hz, radius, hmRes, riverFallbackType) >= 0)
-                            stamps++;
-                    }
+                    if (AddWaterAreaWithPanguMerge(tg, waterAreas,
+                            hx, hz, radius, hmRes, riverFallbackType) >= 0)
+                        stamps++;
                 }
 
                 prevHx = hx; prevHz = hz;
                 havePrev = true;
             }
             return stamps;
+        }
+
+        /// <summary>Convert reflective cps (FF's TerrainRiver.points) to
+        /// heightmap-cell coordinates. Used at gen-time when we walk
+        /// <c>_generationData.rivers</c>.</summary>
+        private static List<CellCoord> ConvertReflectiveCpsToCells(IList cps,
+            int hmRes, int mapW, int mapD)
+        {
+            var result = new List<CellCoord>(cps.Count);
+            for (int idx = 0; idx < cps.Count; idx++)
+            {
+                var pt = cps[idx];
+                if (pt == null) continue;
+                if (!TryGetPointXZ(pt, out float wx, out float wz)) continue;
+                result.Add(new CellCoord(
+                    WorldToHmX(wx, mapW, hmRes),
+                    WorldToHmZ(wz, mapD, hmRes)));
+            }
+            return result;
+        }
+
+        /// <summary>Convert sidecar PointData cps to heightmap-cell coords.
+        /// Used at reload-time when we walk a sidecar river list.</summary>
+        private static List<CellCoord> ConvertPointDataToCells(
+            List<RiverPersistence.PointData> cps,
+            int hmRes, int mapW, int mapD)
+        {
+            var result = new List<CellCoord>(cps.Count);
+            foreach (var p in cps)
+            {
+                result.Add(new CellCoord(
+                    WorldToHmX(p.Pos.x, mapW, hmRes),
+                    WorldToHmZ(p.Pos.z, mapD, hmRes)));
+            }
+            return result;
         }
 
         /// <summary>Stamp a disc polygon centered at (cx, cz) of radius
@@ -476,8 +511,9 @@ namespace RiversRestored.Patches
                     var rd = sidecarRivers[i];
                     if (rd == null || rd.Points.Count < 2) continue;
 
-                    int stamps = StampVector3Path(tg, waterAreas, rd.Points,
-                        hmRes, mapW, mapD, blobRadius, blobStride, riverFallbackType);
+                    var hmCps = ConvertPointDataToCells(rd.Points, hmRes, mapW, mapD);
+                    int stamps = StampCellPath(tg, waterAreas, hmCps,
+                        hmRes, blobRadius, blobStride, riverFallbackType);
                     if (stamps > 0)
                     {
                         riversAdded++;
@@ -496,58 +532,6 @@ namespace RiversRestored.Patches
                 Log($"BuildAndAddFromSidecar exception: {ex}");
                 return 0;
             }
-        }
-
-        /// <summary>Walk a list of Vector3 cps (from sidecar) and stamp at
-        /// stride spacing. Same as <see cref="StampAlongPath"/> but reads
-        /// from RiverPersistence.PointData directly instead of via
-        /// reflection.</summary>
-        private static int StampVector3Path(TerrainGenerator tg, IList waterAreas,
-            List<RiverPersistence.PointData> cps,
-            int hmRes, int mapW, int mapD, int radius, int stride,
-            UnityEngine.Object riverFallbackType)
-        {
-            int stamps = 0;
-            int prevHx = -999, prevHz = -999;
-            bool havePrev = false;
-
-            for (int idx = 0; idx < cps.Count; idx++)
-            {
-                var p = cps[idx];
-                int hx = WorldToHmX(p.Pos.x, mapW, hmRes);
-                int hz = WorldToHmZ(p.Pos.z, mapD, hmRes);
-                RiverCpCells.Add(new CellCoord(hx, hz));
-
-                if (havePrev)
-                {
-                    int dx = hx - prevHx, dz = hz - prevHz;
-                    float dist = Mathf.Sqrt(dx * dx + dz * dz);
-                    int steps = Mathf.Max(1, Mathf.CeilToInt(dist / stride));
-                    for (int s = 1; s <= steps; s++)
-                    {
-                        float t = (float)s / steps;
-                        int sx = Mathf.RoundToInt(Mathf.Lerp(prevHx, hx, t));
-                        int sz = Mathf.RoundToInt(Mathf.Lerp(prevHz, hz, t));
-                        if (sx < 0 || sx >= hmRes || sz < 0 || sz >= hmRes) continue;
-                        if (AddWaterAreaWithPanguMerge(tg, waterAreas,
-                                sx, sz, radius, hmRes, riverFallbackType) >= 0)
-                            stamps++;
-                    }
-                }
-                else
-                {
-                    if (hx >= 0 && hx < hmRes && hz >= 0 && hz < hmRes)
-                    {
-                        if (AddWaterAreaWithPanguMerge(tg, waterAreas,
-                                hx, hz, radius, hmRes, riverFallbackType) >= 0)
-                            stamps++;
-                    }
-                }
-
-                prevHx = hx; prevHz = hz;
-                havePrev = true;
-            }
-            return stamps;
         }
 
         /// <summary>Re-populate <see cref="RiverWaterAreaBounds"/> + <see cref="RiverCpCells"/>

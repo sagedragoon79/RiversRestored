@@ -159,46 +159,6 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>One-time dump of TextureLayers structure + content, plus
-        /// the relevant splatTexturesList entries for visual matching.</summary>
-        private static void DumpLayerShape(IList textureLayers, IList splatTexturesList,
-                                             int riverUnderwaterTex, int riverShorelineTex)
-        {
-            try
-            {
-                // ── DUMP terrain.Data structure (find the right layer list) ──
-                // Also dump every member of the Terrain2Layer instance so we
-                // can find the actual diffuse/normal field names.
-                if (textureLayers.Count > 0 && textureLayers[0] != null)
-                {
-                    Log("===== [LayerShape] Terrain2Layer FULL FIELD DUMP =====");
-                    DumpAllMembers(textureLayers[0]!);
-                    Log("===== [LayerShape] end Terrain2Layer dump =====");
-                }
-
-                Log($"===== [LayerShape] TextureLayers ({textureLayers.Count} entries) =====");
-                for (int i = 0; i < Math.Min(textureLayers.Count, 8); i++)
-                {
-                    var l = textureLayers[i];
-                    if (l == null) { Log($"  [{i}] = null"); continue; }
-                    string diffName = (ExtractTexture(l, new[] { "diffuse", "Diffuse", "texture", "Texture", "albedo", "diffuseMap" }) as UnityEngine.Object)?.name ?? "?";
-                    string normName = (ExtractTexture(l, new[] { "normal", "Normal", "normalMap" }) as UnityEngine.Object)?.name ?? "?";
-                    Log($"  [{i}] {l.GetType().Name}  diffuse={diffName}  normal={normName}");
-                }
-                Log($"===== [LayerShape] splatTexturesList[{riverUnderwaterTex}] (riverUnderwater) =====");
-                if (riverUnderwaterTex >= 0 && riverUnderwaterTex < splatTexturesList.Count)
-                    DumpListEntry(splatTexturesList, riverUnderwaterTex);
-                Log($"===== [LayerShape] splatTexturesList[{riverShorelineTex}] (riverShoreline) =====");
-                if (riverShorelineTex >= 0 && riverShorelineTex < splatTexturesList.Count)
-                    DumpListEntry(splatTexturesList, riverShorelineTex);
-                Log("===== [LayerShape] end =====");
-            }
-            catch (Exception ex)
-            {
-                Log($"DumpLayerShape failed: {ex.Message}");
-            }
-        }
-
         /// <summary>
         /// Dump every field and property of an object with their values.
         /// Useful when we don't know the schema.
@@ -359,8 +319,9 @@ namespace RiversRestored.Patches
                     $"setPixel={setPixelMI != null}  upload={uploadMI != null}");
 
                 // One-shot: dump terrain.Data's full member list so we find
-                // whichever collection holds the live layers.
-                if (!_dumpedTerrainData && terrainData != null)
+                // whichever collection holds the live layers. Verbose-only.
+                if (!_dumpedTerrainData && terrainData != null &&
+                    (RiversRestoredMod.VerboseDiagnostics?.Value ?? false))
                 {
                     _dumpedTerrainData = true;
                     Log("===== [TerrainDataDump] terrain.Data FULL MEMBERS =====");
@@ -485,8 +446,9 @@ namespace RiversRestored.Patches
 
                     if (combinedLayers.Count > 0 && stl != null)
                     {
-                        // Diagnostic: dump CustomLayers content + structures once
-                        if (!_dumpedLayerShape)
+                        // Diagnostic: dump CustomLayers content once. Verbose-only.
+                        if (!_dumpedLayerShape &&
+                            (RiversRestoredMod.VerboseDiagnostics?.Value ?? false))
                         {
                             _dumpedLayerShape = true;
                             DumpCombinedLayers(textureLayers, customLayers, stl, riverUnderwaterTex, riverShorelineTex);
@@ -523,7 +485,8 @@ namespace RiversRestored.Patches
                 int allMaxX = int.MinValue, allMaxZ = int.MinValue;
                 int totalCells = 0;
 
-                if (!_dumpedShape && rivers.Count > 0 && rivers[0] != null)
+                if (!_dumpedShape && rivers.Count > 0 && rivers[0] != null &&
+                    (RiversRestoredMod.VerboseDiagnostics?.Value ?? false))
                 {
                     DumpShape(rivers[0]);
                     _dumpedShape = true;

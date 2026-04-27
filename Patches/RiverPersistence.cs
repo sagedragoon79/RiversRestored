@@ -342,25 +342,23 @@ namespace RiversRestored.Patches
                     }
                 }
 
-                Log($"[SavePre] waterAreas.Count={beforeCount}  ours={oursPresent}/{trackedBounds}");
+                bool verbose = RiversRestoredMod.VerboseDiagnostics?.Value ?? false;
+                if (verbose)
+                    Log($"[SavePre] waterAreas.Count={beforeCount}  ours={oursPresent}/{trackedBounds}");
 
-                // ── Re-add stripped river polygons before FF serializes ────
-                // Diagnostic in v0.2 first reload showed waterAreas dropping
-                // from gen-time (33→36) back to 33 by save-prefix time —
-                // some late gen stage strips additions made by mods. By
-                // save-prefix all gen stages have run, so re-adding here
-                // means our polygons survive into the .map serialization.
+                // ── Defensive re-add fallback ──────────────────────────────
+                // The dual Stage 38 + Stage 60 add (RiverSettingsPatch) keeps
+                // our polygons alive through Stage 50's strip, so this branch
+                // shouldn't fire in normal operation. It stays as a safety
+                // net in case a future gen-pipeline change re-introduces a
+                // strip — log loudly so we notice.
                 if (oursPresent < trackedBounds && trackedBounds > 0)
                 {
-                    Log($"[SavePre] {trackedBounds - oursPresent} river polygon(s) stripped during gen — re-adding via walk-and-stamp before serialization.");
+                    Log($"[SavePre] {trackedBounds - oursPresent} river polygon(s) missing at save time — re-adding via walk-and-stamp.");
                     RiverWaterAreaBuilder.RiverWaterAreaBounds.Clear();
                     int reAdded = RiverWaterAreaBuilder.BuildAndAddForAllRivers(tg);
                     int afterCount = was.Count;
                     Log($"[SavePre] Re-add result: {reAdded} river polygon(s) re-stamped. waterAreas {beforeCount} → {afterCount}.");
-                }
-                else
-                {
-                    Log("[SavePre] All tracked river polygons already present — no re-add needed.");
                 }
             }
             catch (Exception ex)
@@ -394,26 +392,29 @@ namespace RiversRestored.Patches
                 // the cache the rivers list looks empty here and we'd skip the
                 // sidecar write, losing the river data for the next reload.
                 IList? rivers = GetRiversList(tg);
-                int totalPoints;
+                List<RiverData> dataToWrite;
+                string source;
                 if (rivers != null && rivers.Count > 0)
                 {
-                    totalPoints = WriteSidecar(sidecarPath, rivers);
-                    Log($"Saved {rivers.Count} rivers ({totalPoints} points) from live data → {sidecarPath}");
-                    // Cache what we just wrote so subsequent saves after a
-                    // reload still have data even if FF clears the rivers list.
-                    CachedSidecarData = ReadSidecarRivers(sidecarPath);
+                    dataToWrite = ConvertLiveRiversToRiverData(rivers);
+                    source = "live data";
+                    // Cache what we're about to write so subsequent saves
+                    // after a reload still have data even if FF clears the
+                    // rivers list.
+                    CachedSidecarData = dataToWrite;
                 }
                 else if (CachedSidecarData != null && CachedSidecarData.Count > 0)
                 {
-                    totalPoints = WriteSidecarFromCache(sidecarPath, CachedSidecarData);
-                    Log($"Saved {CachedSidecarData.Count} rivers ({totalPoints} points) from cache → {sidecarPath} " +
-                        "(FF cleared live rivers list during prior reload)");
+                    dataToWrite = CachedSidecarData;
+                    source = "cache (FF cleared live rivers list during prior reload)";
                 }
                 else
                 {
                     Log("Save: no rivers in _generationData and no cached sidecar — skipping (vanilla map).");
                     return;
                 }
+                int totalPoints = WriteSidecar(sidecarPath, dataToWrite);
+                Log($"Saved {dataToWrite.Count} rivers ({totalPoints} points) from {source} → {sidecarPath}");
             }
             catch (Exception ex)
             {
@@ -511,11 +512,11 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Serialize a cached RiverData list to the sidecar binary
-        /// (v2 format). Used by SavePostfix as fallback when
-        /// <c>_generationData.rivers</c> is empty (after FF deserializes a save).
-        /// Curves come from cached data; if missing, we emit empty curves.</summary>
-        private static int WriteSidecarFromCache(string path, List<RiverData> cachedRivers)
+        /// <summary>Serialize a RiverData list to the sidecar binary (v2
+        /// format). Single writer for both gen-time live data (converted via
+        /// <see cref="ConvertLiveRiversToRiverData"/>) and reload-time
+        /// cached data.</summary>
+        private static int WriteSidecar(string path, List<RiverData> rivers)
         {
             int totalPoints = 0;
             using (var fs = File.Create(path))
@@ -523,8 +524,8 @@ namespace RiversRestored.Patches
             {
                 bw.Write(SIDECAR_MAGIC);
                 bw.Write(SIDECAR_VERSION);
-                bw.Write(cachedRivers.Count);
-                foreach (var rd in cachedRivers)
+                bw.Write(rivers.Count);
+                foreach (var rd in rivers)
                 {
                     if (rd == null) { bw.Write(0); WriteCurve(bw, null); WriteCurve(bw, null); continue; }
                     bw.Write(rd.Points.Count);
@@ -542,45 +543,36 @@ namespace RiversRestored.Patches
             return totalPoints;
         }
 
-        /// <summary>Serialize rivers to the sidecar binary file (v2 format).</summary>
-        private static int WriteSidecar(string path, IList rivers)
+        /// <summary>Reflectively extract live FF rivers (TerrainRiver list)
+        /// into the in-memory RiverData format used by both the sidecar
+        /// reader and the cache. Lets us share a single binary writer for
+        /// gen-time and reload-time save paths.</summary>
+        private static List<RiverData> ConvertLiveRiversToRiverData(IList rivers)
         {
-            int totalPoints = 0;
-            using (var fs = File.Create(path))
-            using (var bw = new BinaryWriter(fs))
+            var result = new List<RiverData>(rivers.Count);
+            foreach (var river in rivers)
             {
-                bw.Write(SIDECAR_MAGIC);
-                bw.Write(SIDECAR_VERSION);
-                bw.Write(rivers.Count);
-
-                foreach (var river in rivers)
+                if (river == null) { result.Add(null!); continue; }
+                var rd = new RiverData();
+                var points = GetPointsList(river);
+                if (points != null)
                 {
-                    if (river == null) { bw.Write(0); WriteCurve(bw, null); WriteCurve(bw, null); continue; }
-                    var points = GetPointsList(river);
-                    int n = points?.Count ?? 0;
-                    bw.Write(n);
-                    if (points != null)
+                    foreach (var pt in points)
                     {
-                        foreach (var pt in points)
+                        if (pt == null) continue;
+                        rd.Points.Add(new PointData
                         {
-                            if (pt == null) continue;
-                            Vector3 pos = ReadVector3(pt, "pos");
-                            float h = ReadFloat(pt, "height");
-                            float w = ReadFloat(pt, "width");
-                            bw.Write(pos.x); bw.Write(pos.y); bw.Write(pos.z);
-                            bw.Write(h);
-                            bw.Write(w);
-                            totalPoints++;
-                        }
+                            Pos = ReadVector3(pt, "pos"),
+                            Height = ReadFloat(pt, "height"),
+                            Width = ReadFloat(pt, "width"),
+                        });
                     }
-                    // v2: capture curves from the river
-                    AnimationCurve? tc = ReadCurveField(river, "transparencyCurve");
-                    AnimationCurve? ec = ReadCurveField(river, "extinctionCurve");
-                    WriteCurve(bw, tc);
-                    WriteCurve(bw, ec);
                 }
+                rd.TransparencyCurve = ReadCurveField(river, "transparencyCurve");
+                rd.ExtinctionCurve = ReadCurveField(river, "extinctionCurve");
+                result.Add(rd);
             }
-            return totalPoints;
+            return result;
         }
 
         /// <summary>

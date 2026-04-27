@@ -32,7 +32,7 @@ namespace RiversRestored
     {
         public static RiversRestoredMod Instance { get; private set; } = null!;
         public static MelonLogger.Instance Log => Instance.LoggerInstance;
-        public static HarmonyLib.Harmony HarmonyInstance { get; private set; } = null!;
+        public static new HarmonyLib.Harmony HarmonyInstance { get; private set; } = null!;
 
         // ── Master toggle ───────────────────────────────────────────────────
         /// <summary>Kill-switch. When false, the mod does nothing — vanilla
@@ -142,6 +142,11 @@ namespace RiversRestored
         /// values create dramatic canyons but may trigger excess shoreline
         /// auto-paint and persistence issues on save/reload.</summary>
         public static MelonPreferences_Entry<float>? RiverTrenchDepth { get; private set; }
+
+        /// <summary>When true, the mod logs detailed per-WaterArea state at
+        /// save time and per-stage waterAreas counts during gen. Useful for
+        /// diagnosing save/reload bugs, noisy in normal play. Default false.</summary>
+        public static MelonPreferences_Entry<bool>? VerboseDiagnostics { get; private set; }
 
         // ─────────────────────────────────────────────────────────────────
         public override void OnInitializeMelon()
@@ -317,6 +322,16 @@ namespace RiversRestored
                              "8+ = lush fishing economy. " +
                              "Lakes and ocean fishing are unaffected.");
 
+            VerboseDiagnostics = cat.CreateEntry("VerboseDiagnostics", false,
+                display_name: "Verbose Diagnostic Logging",
+                description: "When ON, the mod writes detailed per-WaterArea state " +
+                             "at save time, per-stage waterArea counts during map gen, " +
+                             "and one-shot dumps of FF's internal terrain/biome/layer " +
+                             "structures the first time gen runs. Use this if rivers " +
+                             "aren't surviving save/reload and you want to share a log " +
+                             "for diagnosis. Leave OFF for normal play — the log gets " +
+                             "noisy fast.");
+
             // ── Harmony ───────────────────────────────────────────────────
             HarmonyInstance = new HarmonyLib.Harmony("SageDragoon.RiversRestored");
 
@@ -354,8 +369,6 @@ namespace RiversRestored
             Patches.RiverCarver.ResetGuard();
             _seenGenerator = false;
             _seenTerrain = false;
-            _dumpedSceneOnce = false;
-            _framesWithoutTerrain = 0;
             _dumpedSaveManager = false;
         }
 
@@ -368,8 +381,6 @@ namespace RiversRestored
         // One-shot diagnostic flags so we log "ready" conditions exactly once
         private bool _seenGenerator = false;
         private bool _seenTerrain = false;
-        private bool _dumpedSceneOnce = false;
-        private int _framesWithoutTerrain = 0;
         private bool _dumpedSaveManager = false;
 
         public override void OnUpdate()
@@ -436,53 +447,5 @@ namespace RiversRestored
             }
         }
 
-        /// <summary>
-        /// Dump every GameObject in the scene with "terrain" or "ground" or
-        /// "map" in its name, plus its component types. Helps identify FF's
-        /// custom terrain rendering system.
-        /// </summary>
-        private static void DumpTerrainCandidates()
-        {
-            try
-            {
-                Log.Msg("[RR][SceneDump] No UnityEngine.Terrain found — searching for custom terrain components…");
-                var allGOs = UnityEngine.Object.FindObjectsOfType<UnityEngine.GameObject>();
-                int matched = 0;
-                foreach (var go in allGOs)
-                {
-                    if (go == null) continue;
-                    string n = go.name?.ToLowerInvariant() ?? "";
-                    if (!n.Contains("terrain") && !n.Contains("ground") && !n.Contains("map") &&
-                        !n.Contains("world") && !n.Contains("mesh"))
-                        continue;
-                    matched++;
-                    var components = go.GetComponents<UnityEngine.Component>();
-                    var sb = new System.Text.StringBuilder();
-                    sb.Append($"[RR][SceneDump]   {go.name} : ");
-                    foreach (var c in components)
-                    {
-                        if (c == null) continue;
-                        sb.Append(c.GetType().Name).Append(" ");
-                    }
-                    Log.Msg(sb.ToString());
-                }
-                Log.Msg($"[RR][SceneDump] {matched} candidate GameObject(s) examined.");
-
-                // Also dump any types in TerrainGen namespace that look like renderers
-                var tgAsm = typeof(TerrainGen.TerrainGenerator).Assembly;
-                var renderTypes = tgAsm.GetTypes()
-                    .Where(t => t.Namespace == "TerrainGen" &&
-                                (t.Name.Contains("Render") || t.Name.Contains("Mesh") ||
-                                 t.Name.Contains("Heightmap") || t.Name.Contains("Map")))
-                    .ToArray();
-                Log.Msg($"[RR][SceneDump] {renderTypes.Length} candidate types in TerrainGen namespace:");
-                foreach (var t in renderTypes)
-                    Log.Msg($"[RR][SceneDump]   {t.FullName} ({(typeof(UnityEngine.Component).IsAssignableFrom(t) ? "Component" : "plain")})");
-            }
-            catch (System.Exception ex)
-            {
-                Log.Error($"[RR][SceneDump] failed: {ex}");
-            }
-        }
     }
 }

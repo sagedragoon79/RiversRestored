@@ -22,10 +22,6 @@ namespace RiversRestored.Patches
     /// </summary>
     internal static class RiverSettingsPatch
     {
-        // Track which hook actually fires so we can log it once and trim
-        // the others on the next iteration.
-        private static bool _alreadyApplied = false;
-
         // ── Cached TerrainGenerator for the carver to find later ──────────
         // FindObjectOfType<TerrainGenerator> in OnUpdate may return null
         // after generation completes (instance recycled). We cache the
@@ -202,9 +198,11 @@ namespace RiversRestored.Patches
         /// <summary>Diagnostic: dump current waterAreas.Count + how many
         /// of our tracked river bounds are still present in the list.
         /// Reveals which gen stage strips our additions — the stage where
-        /// ours-count drops from N to 0 is the culprit.</summary>
+        /// ours-count drops from N to 0 is the culprit. Gated behind
+        /// VerboseDiagnostics; otherwise silent.</summary>
         private static void LogWaterAreaCount(TerrainGenerator tg, string stageName)
         {
+            if (!(RiversRestoredMod.VerboseDiagnostics?.Value ?? false)) return;
             try
             {
                 var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
@@ -439,7 +437,9 @@ namespace RiversRestored.Patches
         {
             // Mark the generation as having seen Stage 38 fire, so our
             // injection postfix can detect and avoid double-firing.
+            // (This must always run — it's a guard, not diagnostic.)
             _stage38AlreadyRanThisGen = true;
+            if (!(RiversRestoredMod.VerboseDiagnostics?.Value ?? false)) return;
             DumpGenerationDataState(__instance, "Stage38 POST");
             try
             {
@@ -1059,6 +1059,7 @@ namespace RiversRestored.Patches
         /// <summary>One-shot structure dump — every field of a type and its base.</summary>
         private static void DumpType(string label, Type t)
         {
+            if (!(RiversRestoredMod.VerboseDiagnostics?.Value ?? false)) return;
             try
             {
                 RiversRestoredMod.Log.Msg($"[RR] ===== [TypeDump] {label} = {t.FullName} =====");
@@ -1095,6 +1096,7 @@ namespace RiversRestored.Patches
         private static void DumpAllTerrainBiomes()
         {
             if (_dumpedBiomes) return;
+            if (!(RiversRestoredMod.VerboseDiagnostics?.Value ?? false)) return;
             _dumpedBiomes = true;
             try
             {
@@ -1288,6 +1290,7 @@ namespace RiversRestored.Patches
         /// </summary>
         private static void Stage60PrefixDumper(TerrainGenerator __instance)
         {
+            if (!(RiversRestoredMod.VerboseDiagnostics?.Value ?? false)) return;
             try
             {
                 Type t = __instance.GetType();
@@ -1345,6 +1348,7 @@ namespace RiversRestored.Patches
         /// </summary>
         private static void DumpGenerationDataState(TerrainGenerator __instance, string label)
         {
+            if (!(RiversRestoredMod.VerboseDiagnostics?.Value ?? false)) return;
             try
             {
                 var tgType = __instance.GetType();
