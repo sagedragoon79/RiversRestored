@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -52,12 +53,21 @@ namespace RiversRestored.Patches
         // repeatedly, corrupting render state.
         public static bool RestoredThisLoad { get; private set; } = false;
 
+        /// <summary>Cached sidecar river data, populated either at gen-time
+        /// save (we read what we wrote) or at BTS03 reload (we read the
+        /// loaded sidecar). Used as a fallback in SavePostfix when
+        /// <c>_generationData.rivers</c> is empty — FF clears that list on
+        /// save-load, so subsequent saves after a reload would skip the
+        /// sidecar write without this cache.</summary>
+        public static List<RiverData>? CachedSidecarData { get; private set; } = null;
+
         /// <summary>Reset on scene load so the next save load can restore again.</summary>
         public static void ResetForSceneLoad()
         {
             RestorePending = false;
             PendingSaveName = null;
             RestoredThisLoad = false;
+            CachedSidecarData = null;
         }
 
         public static void Apply(HarmonyLib.Harmony harmony)
@@ -214,7 +224,7 @@ namespace RiversRestored.Patches
                 var smInstance = UnityEngine.Object.FindObjectOfType(smType);
                 if (smInstance == null) { Log("BTS03 postfix: SaveManager instance not found"); return; }
 
-                string sidecarPath = ResolveSidecarPath(smInstance, saveName!);
+                string sidecarPath = ResolveSidecarPath(smInstance, saveName!, isSave: false);
                 if (string.IsNullOrEmpty(sidecarPath) || !File.Exists(sidecarPath))
                 {
                     Log($"BTS03 postfix: no sidecar at {sidecarPath} — vanilla save or non-Rivers map.");
@@ -233,6 +243,13 @@ namespace RiversRestored.Patches
                 Log($"BTS03 postfix: spawning {riverData.Count} rivers from sidecar (sum {riverData.Sum(r => r.Points.Count)} points)");
                 int spawned = SpawnWaterPathsFromSidecar(riverData, tg);
                 Log($"BTS03 postfix: spawned {spawned} WaterPath visual(s) post-rebuild.");
+
+                // Cache the loaded sidecar so subsequent saves can fall back
+                // to it when _generationData.rivers is empty (FF clears that
+                // list on save-load — without this cache, the next save
+                // would skip writing the sidecar entirely).
+                CachedSidecarData = riverData;
+                Log($"BTS03 postfix: cached {riverData.Count} rivers for next-save fallback.");
 
                 // ── KEY DISCOVERY (2026-04-26 reload test): FF's load
                 // doesn't deserialize the saved waterAreas list — it
@@ -364,22 +381,39 @@ namespace RiversRestored.Patches
                 var tg = RiverSettingsPatch.CachedGenerator;
                 if (tg == null) { Log("Save: no cached TerrainGenerator — skipping."); return; }
 
-                IList? rivers = GetRiversList(tg);
-                if (rivers == null || rivers.Count == 0)
-                {
-                    Log("Save: no rivers in _generationData — skipping sidecar (vanilla map).");
-                    return;
-                }
-
-                string sidecarPath = ResolveSidecarPath(__instance, savedGameFileNameNoExtension);
+                string sidecarPath = ResolveSidecarPath(__instance, savedGameFileNameNoExtension, isSave: true);
                 if (string.IsNullOrEmpty(sidecarPath))
                 {
                     Log("Save: could not resolve sidecar path — skipping.");
                     return;
                 }
 
-                int totalPoints = WriteSidecar(sidecarPath, rivers);
-                Log($"Saved {rivers.Count} rivers ({totalPoints} points) → {sidecarPath}");
+                // Prefer live _generationData.rivers (fresh gen has it populated).
+                // Fall back to CachedSidecarData for second-save-after-reload —
+                // FF clears _generationData.rivers during save-load, so without
+                // the cache the rivers list looks empty here and we'd skip the
+                // sidecar write, losing the river data for the next reload.
+                IList? rivers = GetRiversList(tg);
+                int totalPoints;
+                if (rivers != null && rivers.Count > 0)
+                {
+                    totalPoints = WriteSidecar(sidecarPath, rivers);
+                    Log($"Saved {rivers.Count} rivers ({totalPoints} points) from live data → {sidecarPath}");
+                    // Cache what we just wrote so subsequent saves after a
+                    // reload still have data even if FF clears the rivers list.
+                    CachedSidecarData = ReadSidecarRivers(sidecarPath);
+                }
+                else if (CachedSidecarData != null && CachedSidecarData.Count > 0)
+                {
+                    totalPoints = WriteSidecarFromCache(sidecarPath, CachedSidecarData);
+                    Log($"Saved {CachedSidecarData.Count} rivers ({totalPoints} points) from cache → {sidecarPath} " +
+                        "(FF cleared live rivers list during prior reload)");
+                }
+                else
+                {
+                    Log("Save: no rivers in _generationData and no cached sidecar — skipping (vanilla map).");
+                    return;
+                }
             }
             catch (Exception ex)
             {
@@ -392,20 +426,20 @@ namespace RiversRestored.Patches
         /// Format mirrors Pangu's path construction: `Save/<gameFolder>/<saveName>.rivers`.
         /// </summary>
         /// <summary>
-        /// Compute the .rivers sidecar path. Canonical form:
-        ///     Save/{activeSaveFileName}.rivers
-        /// where activeSaveFileName already includes "{slotFolder}/{saveName}".
+        /// Compute the .rivers sidecar path. Behavior differs between save
+        /// and load because <c>SaveManager.activeSaveFileName</c> is unreliable:
         ///
-        /// For save: we read activeSaveFileName from SaveManager static (it's
-        /// usually set just before Save fires). If empty, fall back to the
-        /// bare savedGameFileNameNoExtension passed to the Save hook.
+        /// At SAVE time, asf is often stale (still pointing at the previous
+        /// save name) — so we use the bare <paramref name="saveNameOrPath"/>
+        /// (which is the actual save name being written), giving a flat path
+        /// like <c>Save/{saveName}.rivers</c>.
         ///
-        /// For load: we pass activeSaveFileName as saveNameOrPath here.
-        ///
-        /// On disk: sidecar lives at the same path FF's .map lives, e.g.
-        ///     Save/Soberado_2026254195339/Soberado.rivers
+        /// At LOAD time, FF passes the canonical "{slotFolder}/{saveName}"
+        /// form via both arg and asf, so we try canonical first
+        /// (<c>Save/{slotFolder}/{saveName}.rivers</c>), then fall back to the
+        /// flat path used by save (<c>Save/{saveName}.rivers</c>).
         /// </summary>
-        private static string ResolveSidecarPath(object saveManager, string saveNameOrPath)
+        private static string ResolveSidecarPath(object saveManager, string saveNameOrPath, bool isSave)
         {
             try
             {
@@ -420,55 +454,92 @@ namespace RiversRestored.Patches
                     ?.GetValue(null) ?? "");
 
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                Log($"ResolveSidecarPath ({(isSave ? "SAVE" : "LOAD")}): folderName='{folderName}'  asf='{asf}'  arg='{saveNameOrPath}'");
 
-                // Decide which identifier to use for sidecar path:
-                //   1. activeSaveFileName if set (canonical, slot/name form)
-                //   2. otherwise saveNameOrPath (bare savedGameFileNameNoExtension)
-                string identifier = !string.IsNullOrEmpty(asf) ? asf : saveNameOrPath;
-                if (string.IsNullOrEmpty(identifier))
+                if (isSave)
                 {
-                    Log("ResolveSidecarPath: empty identifier (no activeSaveFileName, no save name)");
-                    return string.Empty;
-                }
-
-                // Build sidecar path. Normalize forward slashes from FF to OS separator.
-                string canonical = Path.Combine(baseDir, folderName, identifier + SIDECAR_EXTENSION)
-                    .Replace('/', Path.DirectorySeparatorChar);
-                Log($"ResolveSidecarPath: folderName='{folderName}'  asf='{asf}'  arg='{saveNameOrPath}'");
-                Log($"  Canonical path: {canonical}");
-
-                // For LOAD — try canonical first; if not found, fall back to flat
-                // path (where we may have written sidecar in earlier mod versions).
-                if (File.Exists(canonical))
-                {
-                    Log($"  → using canonical (file exists)");
-                    return canonical;
-                }
-
-                // Migration fallback: bare-name flat path (older sidecars)
-                string bareName = Path.GetFileName(identifier.Replace('/', Path.DirectorySeparatorChar));
-                string flatPath = Path.Combine(baseDir, folderName, bareName + SIDECAR_EXTENSION);
-                if (File.Exists(flatPath))
-                {
-                    Log($"  → using flat fallback (older sidecar): {flatPath}");
+                    // SAVE: always use the bare arg (the save name being
+                    // written this very moment). asf is unreliable on save —
+                    // it can still point at the previously loaded save.
+                    if (string.IsNullOrEmpty(saveNameOrPath))
+                    {
+                        Log("  empty save name — cannot write sidecar");
+                        return string.Empty;
+                    }
+                    string flatPath = Path.Combine(baseDir, folderName,
+                        saveNameOrPath + SIDECAR_EXTENSION)
+                        .Replace('/', Path.DirectorySeparatorChar);
+                    string parent = Path.GetDirectoryName(flatPath) ?? "";
+                    if (!string.IsNullOrEmpty(parent) && !Directory.Exists(parent))
+                    {
+                        Directory.CreateDirectory(parent);
+                        Log($"  Created directory: {parent}");
+                    }
+                    Log($"  → save target: {flatPath}");
                     return flatPath;
                 }
 
-                // For SAVE — neither exists yet; use canonical and ensure dir exists
-                string parent = Path.GetDirectoryName(canonical) ?? "";
-                if (!string.IsNullOrEmpty(parent) && !Directory.Exists(parent))
+                // LOAD: prefer canonical (slot-folder path), fall back to flat.
+                string identifier = !string.IsNullOrEmpty(asf) ? asf : saveNameOrPath;
+                if (string.IsNullOrEmpty(identifier))
                 {
-                    Directory.CreateDirectory(parent);
-                    Log($"  Created directory: {parent}");
+                    Log("  empty identifier — cannot resolve sidecar for load");
+                    return string.Empty;
                 }
-                Log($"  → using canonical (new sidecar)");
-                return canonical;
+                string canonical = Path.Combine(baseDir, folderName,
+                    identifier + SIDECAR_EXTENSION)
+                    .Replace('/', Path.DirectorySeparatorChar);
+                if (File.Exists(canonical))
+                {
+                    Log($"  → load canonical (file exists): {canonical}");
+                    return canonical;
+                }
+                string bareName = Path.GetFileName(identifier.Replace('/', Path.DirectorySeparatorChar));
+                string flatLoad = Path.Combine(baseDir, folderName, bareName + SIDECAR_EXTENSION);
+                if (File.Exists(flatLoad))
+                {
+                    Log($"  → load flat fallback: {flatLoad}");
+                    return flatLoad;
+                }
+                Log($"  → no sidecar found at canonical {canonical} or flat {flatLoad}");
+                return canonical; // return canonical anyway so caller logs the expected path
             }
             catch (Exception ex)
             {
                 Log($"ResolveSidecarPath exception: {ex.Message}");
                 return string.Empty;
             }
+        }
+
+        /// <summary>Serialize a cached RiverData list to the sidecar binary
+        /// (v2 format). Used by SavePostfix as fallback when
+        /// <c>_generationData.rivers</c> is empty (after FF deserializes a save).
+        /// Curves come from cached data; if missing, we emit empty curves.</summary>
+        private static int WriteSidecarFromCache(string path, List<RiverData> cachedRivers)
+        {
+            int totalPoints = 0;
+            using (var fs = File.Create(path))
+            using (var bw = new BinaryWriter(fs))
+            {
+                bw.Write(SIDECAR_MAGIC);
+                bw.Write(SIDECAR_VERSION);
+                bw.Write(cachedRivers.Count);
+                foreach (var rd in cachedRivers)
+                {
+                    if (rd == null) { bw.Write(0); WriteCurve(bw, null); WriteCurve(bw, null); continue; }
+                    bw.Write(rd.Points.Count);
+                    foreach (var p in rd.Points)
+                    {
+                        bw.Write(p.Pos.x); bw.Write(p.Pos.y); bw.Write(p.Pos.z);
+                        bw.Write(p.Height);
+                        bw.Write(p.Width);
+                        totalPoints++;
+                    }
+                    WriteCurve(bw, rd.TransparencyCurve);
+                    WriteCurve(bw, rd.ExtinctionCurve);
+                }
+            }
+            return totalPoints;
         }
 
         /// <summary>Serialize rivers to the sidecar binary file (v2 format).</summary>
@@ -760,7 +831,7 @@ namespace RiversRestored.Patches
                 var smInstance = UnityEngine.Object.FindObjectOfType(smType);
                 if (smInstance == null) return false; // wait for SaveManager to spawn
 
-                string sidecarPath = ResolveSidecarPath(smInstance, PendingSaveName!);
+                string sidecarPath = ResolveSidecarPath(smInstance, PendingSaveName!, isSave: false);
                 if (string.IsNullOrEmpty(sidecarPath) || !File.Exists(sidecarPath))
                 {
                     Log($"No sidecar at {sidecarPath} — skipping (vanilla save or non-Rivers map).");

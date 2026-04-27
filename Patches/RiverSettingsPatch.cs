@@ -307,9 +307,29 @@ namespace RiversRestored.Patches
                 RiversRestoredMod.Log.Msg(
                     "[RR] <<< Stage 38 injection completed without exception.");
 
-                // (v0.2 update: WaterArea registration moved from here to
-                // InjectStage60Postfix — see comment there. Stage 38 timing
-                // gets stripped by Stage 50's waterAreas rebuild.)
+                // ── First WaterArea registration pass (early/visibility) ──
+                // FishingManager allocates fish nodes somewhere between
+                // Stage 38 and Stage 60, and bases that allocation on what's
+                // already in _generationData.waterAreas. If we don't add here,
+                // no fish nodes get allocated for our river polygons.
+                //
+                // Stage 50 (Water) WILL strip these additions when it
+                // rebuilds the list — that's what InjectStage60Postfix is
+                // for: a SECOND pass at post-Stage-50 timing that re-adds
+                // for save persistence. Both passes needed:
+                //   Stage 38 add → fish-node allocation visibility
+                //   Stage 60 add → survives FF gen rebuild + save serialization
+                if (RiversRestoredMod.RiverRegisterAsWaterArea?.Value ?? true)
+                {
+                    int added = RiverWaterAreaBuilder.BuildAndAddForAllRivers(__instance);
+                    if (added > 0)
+                    {
+                        RiversRestoredMod.Log.Msg(
+                            $"[RR] Registered {added} river polygon(s) as WaterAreas at Stage 38 " +
+                            "(early visibility for FishingManager allocation; will be re-added " +
+                            "at Stage 60 postfix to survive Stage 50 strip).");
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -362,33 +382,33 @@ namespace RiversRestored.Patches
                     $"[RR] Stage 60 partial (expected): {inner.GetType().Name} at {inner.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}");
             }
 
-            // ── v0.2: Register rivers as WaterAreas POST-Stage-50 ──────────
-            // KEY TIMING DISCOVERY (2026-04-26): Stage 50 (Water) rebuilds
-            // _generationData.waterAreas from its own data source, stripping
-            // any additions we made at Stage 38. Diagnostic log showed
-            // gen-time `5 → 6 (ours=2/2)` at Stage 40, then `6 (ours=0/2)`
-            // at SavePrefix — Stage 50 wiped our entries.
+            // ── Second WaterArea registration pass (post-Stage-50, persistence) ──
+            // Stage 50 (Water) rebuilds _generationData.waterAreas from its
+            // own data source, stripping our Stage 38 additions. This second
+            // pass — at the postfix on Stage 50's carrier, fired AFTER Stage 50
+            // body has run — re-adds the polygons so they survive into
+            // serialization. Both passes are needed:
+            //   Stage 38 add → FishingManager allocates fish nodes during
+            //                  the gap between 38 and 50
+            //   Stage 60 add → survives FF gen rebuild + save serialization
             //
-            // User insight: Pangu's runtime-painted polygons survive save/
-            // reload because Pangu adds AFTER gen finishes. We mimic that
-            // here — the postfix on Stage 50's carrier fires AFTER Stage 50
-            // body has run, so adding now means our entries persist into
-            // serialization. Bonus: Stage 70 (Roads) and Stage 95 (Trees)
-            // run after this, so resource avoidance still works.
+            // We clear RiverWaterAreaBounds first so the bounds set reflects
+            // the new (post-rebuild) polygon shapes, not the stripped Stage 38
+            // ones. RiverCpCells stays — cps don't change.
             //
-            // We also call ForceWaterPlaneRebuild immediately to render the
-            // water plane meshes at gen-time — Stage 50 already did that
-            // pass for the polygons it knew about; ours just appeared, so
-            // we trigger a manual Pangu-pattern rebuild for them.
+            // ForceWaterPlaneRebuild fires immediately to render water plane
+            // meshes at gen-time (Stage 50 already did that pass for the
+            // polygons it knew about, but ours just appeared).
             if (RiversRestoredMod.RiverRegisterAsWaterArea?.Value ?? true)
             {
                 try
                 {
+                    RiverWaterAreaBuilder.RiverWaterAreaBounds.Clear();
                     int added = RiverWaterAreaBuilder.BuildAndAddForAllRivers(__instance);
                     if (added > 0)
                     {
                         RiversRestoredMod.Log.Msg(
-                            $"[RR] Registered {added} river polygon(s) as WaterAreas POST-Stage-50 " +
+                            $"[RR] Re-registered {added} river polygon(s) as WaterAreas POST-Stage-50 " +
                             "(survives FF's gen rebuild — Pangu-pattern timing).");
                         RiverPersistence.ForceWaterPlaneRebuild(__instance);
                     }
