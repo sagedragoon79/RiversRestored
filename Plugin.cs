@@ -3,7 +3,7 @@ using HarmonyLib;
 using MelonLoader;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rivers Restored v0.1.0
+//  Rivers Restored v1.0.0
 //
 //  Discovery: Farthest Frontier ships with a COMPLETE river generation system
 //  that simply isn't active on shipped maps. The Voronoi-based path generator,
@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "0.1.0", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.0.0", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -340,7 +340,7 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 0.1.0 loaded. NumRivers={NumRivers.Value}, " +
+                Log.Msg($"[RR] Rivers Restored 1.0.0 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
             }
             catch (System.Exception ex)
