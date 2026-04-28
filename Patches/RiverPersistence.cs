@@ -240,9 +240,20 @@ namespace RiversRestored.Patches
                     return;
                 }
 
-                Log($"BTS03 postfix: spawning {riverData.Count} rivers from sidecar (sum {riverData.Sum(r => r.Points.Count)} points)");
-                int spawned = SpawnWaterPathsFromSidecar(riverData, tg);
-                Log($"BTS03 postfix: spawned {spawned} WaterPath visual(s) post-rebuild.");
+                // Ribbon respawn is gated on EnableRibbonAnimation so the
+                // perf toggle works on reload too. The static water polygon
+                // (added below via walk-and-stamp) is independent.
+                bool ribbonsEnabled = RiversRestoredMod.EnableRibbonAnimation?.Value ?? true;
+                if (ribbonsEnabled)
+                {
+                    Log($"BTS03 postfix: spawning {riverData.Count} rivers from sidecar (sum {riverData.Sum(r => r.Points.Count)} points)");
+                    int spawned = SpawnWaterPathsFromSidecar(riverData, tg);
+                    Log($"BTS03 postfix: spawned {spawned} WaterPath visual(s) post-rebuild.");
+                }
+                else
+                {
+                    Log("BTS03 postfix: EnableRibbonAnimation=false — skipping ribbon respawn (static water plane only).");
+                }
 
                 // Cache the loaded sidecar so subsequent saves can fall back
                 // to it when _generationData.rivers is empty (FF clears that
@@ -853,8 +864,16 @@ namespace RiversRestored.Patches
                     Log($"  Curves[0]: transparency={(riverData[0].TransparencyCurve != null ? "ok" : "null")}  extinction={(riverData[0].ExtinctionCurve != null ? "ok" : "null")}");
                 }
 
-                int spawned = SpawnWaterPathsFromSidecar(riverData, __instance);
-                Log($"Spawned {spawned} WaterPath visual(s).");
+                bool ribbonsEnabled2 = RiversRestoredMod.EnableRibbonAnimation?.Value ?? true;
+                if (ribbonsEnabled2)
+                {
+                    int spawned = SpawnWaterPathsFromSidecar(riverData, __instance);
+                    Log($"Spawned {spawned} WaterPath visual(s).");
+                }
+                else
+                {
+                    Log("EnableRibbonAnimation=false — skipping ribbon respawn (static water plane only).");
+                }
                 RestoredThisLoad = true;
                 return true;
                 #pragma warning disable CS0162 // unreachable

@@ -3,7 +3,7 @@ using HarmonyLib;
 using MelonLoader;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rivers Restored v1.0.0
+//  Rivers Restored v1.0.1
 //
 //  Discovery: Farthest Frontier ships with a COMPLETE river generation system
 //  that simply isn't active on shipped maps. The Voronoi-based path generator,
@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.0.0", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.0.1", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -148,6 +148,14 @@ namespace RiversRestored
         /// diagnosing save/reload bugs, noisy in normal play. Default false.</summary>
         public static MelonPreferences_Entry<bool>? VerboseDiagnostics { get; private set; }
 
+        /// <summary>When true, the visible flowing-water ribbon mesh is spawned
+        /// on each river. When false, rivers render as a static green water
+        /// surface only — no flow animation. Disabling reduces CPU/GPU load
+        /// significantly on river-heavy maps; everything else (fishing,
+        /// resource avoidance, save/reload, polygon water plane) still works.
+        /// Default true.</summary>
+        public static MelonPreferences_Entry<bool>? EnableRibbonAnimation { get; private set; }
+
         // ─────────────────────────────────────────────────────────────────
         public override void OnInitializeMelon()
         {
@@ -161,6 +169,19 @@ namespace RiversRestored
                 description: "Master ON/OFF switch for the entire mod. " +
                              "Set to false to disable everything and play with " +
                              "vanilla behaviour (no rivers will generate).");
+
+            EnableRibbonAnimation = cat.CreateEntry("EnableRibbonAnimation", true,
+                display_name: "Enable Flowing-Water Animation",
+                description: "When ON (default): rivers display the animated " +
+                             "flowing-water ribbon mesh on top of the static water " +
+                             "surface — visible swirling flow effect. " +
+                             "When OFF: rivers render as a static green water " +
+                             "surface only (like lakes), no flow animation. " +
+                             "Turn OFF if you experience high CPU/GPU load or stutter " +
+                             "on river-heavy maps — the ribbon's per-frame UV " +
+                             "scrolling and per-cp subdivisions can be expensive. " +
+                             "Fishing, resource avoidance, save/reload, and the " +
+                             "carved riverbed all still work unchanged when this is OFF.");
 
             NumRivers = cat.CreateEntry("NumRivers", 4,
                 display_name: "Number of Rivers",
@@ -340,7 +361,7 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.0.0 loaded. NumRivers={NumRivers.Value}, " +
+                Log.Msg($"[RR] Rivers Restored 1.0.1 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
             }
             catch (System.Exception ex)

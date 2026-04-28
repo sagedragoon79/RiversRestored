@@ -355,29 +355,44 @@ namespace RiversRestored.Patches
                     "[RR] Stage60 already ran this gen — skipping injection.");
                 return;
             }
-            try
+            // Stage 60 (RiverGeometry) is what spawns the WaterPath ribbon
+            // visuals. If the user disabled ribbons in cfg (perf-saving),
+            // skip the invoke entirely — the static water polygon (added
+            // below) is independent of the ribbon, so the river still
+            // renders, just without the flow animation.
+            bool ribbonsEnabled = RiversRestoredMod.EnableRibbonAnimation?.Value ?? true;
+            if (ribbonsEnabled)
             {
-                // Preflight: heal the instance fields the sliced pipeline
-                // never initialized. Without this, Stage 60's GridTrace will
-                // NRE on a null waterBiome / cachedAreas / etc.
-                PrepareForStage60(__instance);
+                try
+                {
+                    // Preflight: heal the instance fields the sliced pipeline
+                    // never initialized. Without this, Stage 60's GridTrace will
+                    // NRE on a null waterBiome / cachedAreas / etc.
+                    PrepareForStage60(__instance);
 
-                RiversRestoredMod.Log.Msg(
-                    "[RR] >>> Injecting Stage 60 (RiverGeometry) after Stage 50 (Water)…");
-                _miStage60.Invoke(__instance, null);
-                _stage60AlreadyRanThisGen = true;
-                RiversRestoredMod.Log.Msg(
-                    "[RR] <<< Stage 60 injection completed without exception.");
+                    RiversRestoredMod.Log.Msg(
+                        "[RR] >>> Injecting Stage 60 (RiverGeometry) after Stage 50 (Water)…");
+                    _miStage60.Invoke(__instance, null);
+                    _stage60AlreadyRanThisGen = true;
+                    RiversRestoredMod.Log.Msg(
+                        "[RR] <<< Stage 60 injection completed without exception.");
+                }
+                catch (Exception ex)
+                {
+                    Exception inner = (ex is TargetInvocationException tie && tie.InnerException != null)
+                        ? tie.InnerException : ex;
+                    // Demoted to Warning — Stage 60 partial-execution gives us
+                    // WaterPath visuals + endpoint caps before NREing. The carve
+                    // failure is expected; we do that ourselves below.
+                    RiversRestoredMod.Log.Warning(
+                        $"[RR] Stage 60 partial (expected): {inner.GetType().Name} at {inner.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}");
+                }
             }
-            catch (Exception ex)
+            else
             {
-                Exception inner = (ex is TargetInvocationException tie && tie.InnerException != null)
-                    ? tie.InnerException : ex;
-                // Demoted to Warning — Stage 60 partial-execution gives us
-                // WaterPath visuals + endpoint caps before NREing. The carve
-                // failure is expected; we do that ourselves below.
-                RiversRestoredMod.Log.Warning(
-                    $"[RR] Stage 60 partial (expected): {inner.GetType().Name} at {inner.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}");
+                RiversRestoredMod.Log.Msg(
+                    "[RR] EnableRibbonAnimation=false — skipping Stage 60 invocation (no flow ribbon, static water plane only).");
+                _stage60AlreadyRanThisGen = true;
             }
 
             // ── Second WaterArea registration pass (post-Stage-50, persistence) ──
