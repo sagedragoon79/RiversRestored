@@ -4,9 +4,9 @@
     <TargetFramework>net46</TargetFramework>
     <AssemblyName>RiversRestored</AssemblyName>
     <RootNamespace>RiversRestored</RootNamespace>
-    <Version>1.0.1</Version>
-    <FileVersion>1.0.1</FileVersion>
-    <AssemblyVersion>1.0.1</AssemblyVersion>
+    <Version>1.1.0</Version>
+    <FileVersion>1.1.0</FileVersion>
+    <AssemblyVersion>1.1.0</AssemblyVersion>
     <Description>Enables the vanilla-but-disabled river generation system in Farthest Frontier</Description>
     <Company>SageDragoon</Company>
     <Product>Rivers Restored</Product>

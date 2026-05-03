@@ -1,0 +1,184 @@
+using System;
+using System.Reflection;
+using MelonLoader;
+
+namespace RiversRestored
+{
+    /// <summary>Optional integration with Keep Clarity's settings panel. No-op when KeepClarity.dll is absent.</summary>
+    internal static class KeepClarityIntegration
+    {
+        private static bool _resolved, _present;
+        private static MethodInfo? _registerMod;
+        private static MethodInfo? _registerEntry;
+        private static Type? _settingsMetaType;
+
+        private const string ModId = "RiversRestored";
+        private const string ModDisplayName = "Rivers Restored";
+
+        public static void TryRegisterAll()
+        {
+            if (!ResolveApi()) return;
+            try
+            {
+                RegisterMod();
+                RegisterEntries();
+                MelonLogger.Msg("[RR] Registered with Keep Clarity settings panel");
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[RR] Keep Clarity registration failed: {ex.Message}");
+            }
+        }
+
+        private static bool ResolveApi()
+        {
+            if (_resolved) return _present;
+            _resolved = true;
+            var apiType = Type.GetType("FFUIOverhaul.Settings.SettingsAPI, KeepClarity");
+            if (apiType == null) { _present = false; return false; }
+            _settingsMetaType = Type.GetType("FFUIOverhaul.Settings.SettingsMeta, KeepClarity");
+            if (_settingsMetaType == null) { _present = false; return false; }
+            _registerMod = apiType.GetMethod("RegisterMod", BindingFlags.Public | BindingFlags.Static);
+            foreach (var m in apiType.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                if (m.Name == "Register" && m.IsGenericMethodDefinition) { _registerEntry = m; break; }
+            _present = _registerMod != null && _registerEntry != null;
+            return _present;
+        }
+
+        private static void RegisterMod()
+        {
+            _registerMod!.Invoke(null, new object?[] {
+                ModId, ModDisplayName,
+                "Restores river generation on FF maps and exposes river density/shape/fishing tuning",
+                /*version*/ null,
+                /*iconResourcePath*/ null,
+                /*accentRgb — river blue*/ new[] { 0.30f, 0.55f, 0.75f, 1f },
+                /*order*/ 50
+            });
+        }
+
+        private static object NewMeta(string? label = null, string? tooltip = null,
+            object? min = null, object? max = null, bool restartRequired = false,
+            int order = 0, Func<bool>? visibleWhen = null)
+        {
+            var m = Activator.CreateInstance(_settingsMetaType!);
+            void Set(string field, object? value)
+            {
+                var f = _settingsMetaType!.GetField(field);
+                if (f != null) f.SetValue(m, value);
+            }
+            Set("Label", label);
+            Set("Tooltip", tooltip);
+            Set("Min", min);
+            Set("Max", max);
+            Set("RestartRequired", restartRequired);
+            Set("Order", order);
+            Set("VisibleWhen", visibleWhen);
+            return m!;
+        }
+
+        private static void Reg<T>(string category, MelonPreferences_Entry<T>? entry, object meta)
+        {
+            if (entry == null) return;
+            var closed = _registerEntry!.MakeGenericMethod(typeof(T));
+            closed.Invoke(null, new object?[] { ModId, ModDisplayName, category, entry, meta });
+        }
+
+        private static void RegisterEntries()
+        {
+            // Hides everything when the master toggle is off.
+            Func<bool> on = () => RiversRestoredMod.RiversEnabled.Value;
+
+            // === Master ===
+            Reg("Master", RiversRestoredMod.RiversEnabled,
+                NewMeta("Rivers Enabled", "Master toggle. Off = vanilla (no rivers)."));
+            Reg("Master", RiversRestoredMod.EnableRibbonAnimation,
+                NewMeta("Flowing-Water Animation",
+                    "On = animated ribbon flow. Off = static green water (cheaper, lakes-style)",
+                    visibleWhen: on));
+
+            // === Density ===
+            Reg("Density", RiversRestoredMod.NumRivers,
+                NewMeta("Number of Rivers", min: 0, max: 12,
+                    tooltip: "Generator targets this count; final number depends on seed feasibility",
+                    visibleWhen: on));
+            Reg("Density", RiversRestoredMod.MinPoints,
+                NewMeta("Minimum River Length", min: 1, max: 50,
+                    tooltip: "Min control points for a river to be accepted",
+                    visibleWhen: on));
+
+            // === Shape — Width / Depth ===
+            Reg("Shape — Width / Depth", RiversRestoredMod.MinWidth,
+                NewMeta("Min Width (cells)", min: 0, max: 30,
+                    tooltip: "0 = leave vanilla", visibleWhen: on));
+            Reg("Shape — Width / Depth", RiversRestoredMod.MaxWidth,
+                NewMeta("Max Width (cells)", min: 0, max: 60,
+                    tooltip: "0 = leave vanilla", visibleWhen: on));
+            Reg("Shape — Width / Depth", RiversRestoredMod.MinDepth,
+                NewMeta("Min Depth (m)", min: -1f, max: 5f,
+                    tooltip: "-1 = leave vanilla", visibleWhen: on));
+            Reg("Shape — Width / Depth", RiversRestoredMod.MaxDepth,
+                NewMeta("Max Depth (m)", min: -1f, max: 10f,
+                    tooltip: "-1 = leave vanilla", visibleWhen: on));
+
+            // === Carve Shape ===
+            Reg("Carve Shape", RiversRestoredMod.RiverInnerRadius,
+                NewMeta("Trench Inner Radius (cells)", min: 1, max: 10,
+                    tooltip: "Cells within this distance of centerline are carved to trench depth",
+                    visibleWhen: on));
+            Reg("Carve Shape", RiversRestoredMod.RiverOuterRadius,
+                NewMeta("Bank Outer Radius (cells)", min: 2, max: 20,
+                    tooltip: "Where banks blend back to original terrain",
+                    visibleWhen: on));
+            Reg("Carve Shape", RiversRestoredMod.RiverTrenchDepth,
+                NewMeta("Trench Depth (m)", min: 0.1f, max: 5f,
+                    tooltip: "How deep below water surface the trench is carved",
+                    visibleWhen: on));
+            Reg("Carve Shape", RiversRestoredMod.RiverSmoothPasses,
+                NewMeta("Bank Smooth Passes", min: 0, max: 12,
+                    tooltip: "0 = raw carve, 4 = good default, 8 = very gentle",
+                    visibleWhen: on));
+            Reg("Carve Shape", RiversRestoredMod.RiverJitterAmplitude,
+                NewMeta("Meander Amplitude (m)", min: 0f, max: 5f,
+                    tooltip: "0 = straight, larger = more meandering",
+                    visibleWhen: on));
+            Reg("Carve Shape", RiversRestoredMod.RiverJitterFrequency,
+                NewMeta("Meander Frequency", min: 0f, max: 3f,
+                    tooltip: "Wave oscillations per Voronoi segment",
+                    visibleWhen: on));
+
+            // === Water Plane / Fishing ===
+            Reg("Water Plane / Fishing", RiversRestoredMod.RiverRegisterAsWaterArea,
+                NewMeta("Register as Water Area",
+                    "Treat rivers as water areas (lakes-style) — enables fishing and stable persistence",
+                    visibleWhen: on));
+            Reg("Water Plane / Fishing", RiversRestoredMod.RiverBlobRadius,
+                NewMeta("Disc Stamp Radius (cells)", min: 1, max: 10,
+                    tooltip: "Disc-stamp radius for water-area polygon merging",
+                    visibleWhen: on));
+            Reg("Water Plane / Fishing", RiversRestoredMod.RiverBlobStride,
+                NewMeta("Disc Stamp Stride (cells)", min: 1, max: 10,
+                    tooltip: "Spacing between disc stamps along the path",
+                    visibleWhen: on));
+            Reg("Water Plane / Fishing", RiversRestoredMod.RiverFishingAreaMultiplier,
+                NewMeta("Fishing Area Multiplier", min: 1, max: 8,
+                    tooltip: "1 = vanilla density (sparse), 4 = playable density",
+                    visibleWhen: on));
+
+            // === Generator Gating ===
+            Reg("Generator Gating", RiversRestoredMod.MarkWaterTypesAsRiverEnd,
+                NewMeta("Mark Water as River-End",
+                    "THE gate — without this, no river ever validates regardless of count",
+                    visibleWhen: on));
+            Reg("Generator Gating", RiversRestoredMod.ForceCoastlineTerrain,
+                NewMeta("Force Coastline Terrain",
+                    "Diagnostic: forces Coastline biome (gives ocean as guaranteed river endpoint)",
+                    visibleWhen: on));
+
+            // === Diagnostics ===
+            Reg("Diagnostics", RiversRestoredMod.VerboseDiagnostics,
+                NewMeta("Verbose Diagnostics",
+                    "Per-WaterArea state on save, per-stage waterAreas counts during gen. Noisy in normal play."));
+        }
+    }
+}

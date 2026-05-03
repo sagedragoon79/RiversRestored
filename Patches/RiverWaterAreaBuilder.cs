@@ -465,11 +465,184 @@ namespace RiversRestored.Patches
         }
 
         /// <summary>Walk the sidecar's cp data and stamp polygons directly,
-        /// bypassing <c>_generationData.rivers</c> (which FF clears on save-
-        /// load). Used by BTS03 postfix on reload to re-add the river
-        /// polygons that FF's loader didn't deserialize. Mirrors gen-time
-        /// <see cref="BuildAndAddForAllRivers"/> walk-and-stamp logic but
-        /// reads from sidecar data instead of FF's rivers list.</summary>
+        /// <summary>v3 fast-path: take fully-formed polygon shapes from a
+        /// sidecar and slot them directly into <c>_generationData.waterAreas</c>,
+        /// skipping the walk-and-stamp + cell-adjacency merge that
+        /// <see cref="BuildAndAddFromSidecar"/> has to run for v1/v2 sidecars.
+        /// Reload-time cost drops from seconds to milliseconds.
+        ///
+        /// Also absorbs FF-regenerated polygons whose center cell lies
+        /// inside one of our saved masks — those are the lakes that were
+        /// merged into our river polygons at gen time, but FF re-spawns them
+        /// from seed on load so they'd otherwise overlap with our merged
+        /// shape. Ocean polygons are explicitly skipped from absorption.
+        /// </summary>
+        public static int AddPrebuiltWaterAreas(TerrainGenerator tg,
+            List<RiverPersistence.PolygonData> polygons)
+        {
+            try
+            {
+                if (!ResolveTypes()) return 0;
+                if (polygons == null || polygons.Count == 0) return 0;
+
+                var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd == null) { Log("AddPrebuiltWaterAreas: _generationData null"); return 0; }
+                var waterAreasField = gd.GetType().GetField("waterAreas",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var waterAreas = waterAreasField?.GetValue(gd) as IList;
+                if (waterAreas == null) { Log("AddPrebuiltWaterAreas: waterAreas null"); return 0; }
+
+                var fallbackType = ResolveRiverWaterType(tg);
+                var lakeTypeMap = BuildLakeTypeNameMap(tg);
+
+                int added = 0;
+                int absorbed = 0;
+                int waterAreasBefore = waterAreas.Count;
+                foreach (var poly in polygons)
+                {
+                    if (poly == null) continue;
+
+                    // Resolve WaterType: lookup by saved name in lakeTypes,
+                    // fallback to riverFallback if name unknown / missing.
+                    UnityEngine.Object? wt = null;
+                    if (!string.IsNullOrEmpty(poly.WaterTypeName)
+                        && lakeTypeMap.TryGetValue(poly.WaterTypeName, out var foundWt))
+                        wt = foundWt;
+                    if (wt == null) wt = fallbackType;
+                    if (wt == null) continue;
+
+                    bool[,] mask = poly.UnpackMask();
+                    int pw = mask.GetLength(0), ph = mask.GetLength(1);
+
+                    // Recompute edge[] + shore[] from the mask (same algorithm
+                    // as AddWaterAreaWithPanguMerge step 6).
+                    var edges = new List<object>();
+                    var shores = new List<object>();
+                    for (int m = poly.MinZ; m <= poly.MaxZ; m++)
+                    {
+                        for (int n = poly.MinX; n <= poly.MaxX; n++)
+                        {
+                            int gx = n - poly.MinX, gz = m - poly.MinZ;
+                            if (!mask[gx, gz]) continue;
+                            bool n_w = IsMaskFilled(mask, poly.MinX, poly.MinZ, poly.MaxX, poly.MaxZ, n - 1, m);
+                            bool n_e = IsMaskFilled(mask, poly.MinX, poly.MinZ, poly.MaxX, poly.MaxZ, n + 1, m);
+                            bool n_s = IsMaskFilled(mask, poly.MinX, poly.MinZ, poly.MaxX, poly.MaxZ, n, m - 1);
+                            bool n_n = IsMaskFilled(mask, poly.MinX, poly.MinZ, poly.MaxX, poly.MaxZ, n, m + 1);
+                            if (!(n_w && n_e && n_s && n_n))
+                            {
+                                int nx = 0, nz = 0;
+                                if (!n_w) nx--;
+                                if (!n_e) nx++;
+                                if (!n_s) nz--;
+                                if (!n_n) nz++;
+                                if (nx == 0 && nz == 0) nz = 1;
+                                var edge = Activator.CreateInstance(_waterEdgeType!)!;
+                                _feX!.SetValue(edge, n);
+                                _feZ!.SetValue(edge, m);
+                                _feNx!.SetValue(edge, nx);
+                                _feNz!.SetValue(edge, nz);
+                                edges.Add(edge);
+                                var pair = _pairCtor!.Invoke(new object[] { n, m });
+                                shores.Add(pair);
+                            }
+                        }
+                    }
+                    var edgesArr = Array.CreateInstance(_waterEdgeType!, edges.Count);
+                    for (int i = 0; i < edges.Count; i++) edgesArr.SetValue(edges[i], i);
+                    var shoresArr = Array.CreateInstance(_pairIntIntType!, shores.Count);
+                    for (int i = 0; i < shores.Count; i++) shoresArr.SetValue(shores[i], i);
+
+                    // Absorb FF-regenerated polygons whose center cell falls
+                    // inside our saved mask. These are the lakes our river
+                    // merged with at gen time; FF respawns them from seed on
+                    // load so without absorption they'd visually overlap our
+                    // merged shape and z-fight at the surface.
+                    for (int idx = waterAreas.Count - 1; idx >= 0; idx--)
+                    {
+                        var existing = waterAreas[idx];
+                        if (existing == null) continue;
+                        int eMinX = (int)_faMinX!.GetValue(existing);
+                        int eMinZ = (int)_faMinZ!.GetValue(existing);
+                        int eMaxX = (int)_faMaxX!.GetValue(existing);
+                        int eMaxZ = (int)_faMaxZ!.GetValue(existing);
+                        int eCenterX = (eMinX + eMaxX) / 2;
+                        int eCenterZ = (eMinZ + eMaxZ) / 2;
+                        if (eCenterX < poly.MinX || eCenterX > poly.MaxX) continue;
+                        if (eCenterZ < poly.MinZ || eCenterZ > poly.MaxZ) continue;
+                        int mx = eCenterX - poly.MinX;
+                        int mz = eCenterZ - poly.MinZ;
+                        if (mx < 0 || mx >= pw || mz < 0 || mz >= ph) continue;
+                        if (!mask[mx, mz]) continue;
+                        // Don't absorb the ocean — its bbox is huge and its
+                        // center could legitimately land inside our mask
+                        // without it being a polygon we merged.
+                        var existingWt = _faWaterType!.GetValue(existing) as UnityEngine.Object;
+                        string existingWtName = existingWt?.name ?? "";
+                        if (existingWtName.IndexOf("ocean", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+                        waterAreas.RemoveAt(idx);
+                        absorbed++;
+                    }
+
+                    // Construct WaterArea (boxed struct) and add.
+                    object area = Activator.CreateInstance(_waterAreaType!)!;
+                    _faWaterType!.SetValue(area, wt);
+                    _faPoints!.SetValue(area, mask);
+                    _faEdge!.SetValue(area, edgesArr);
+                    _faShore!.SetValue(area, shoresArr);
+                    _faMinX!.SetValue(area, poly.MinX);
+                    _faMinZ!.SetValue(area, poly.MinZ);
+                    _faMaxX!.SetValue(area, poly.MaxX);
+                    _faMaxZ!.SetValue(area, poly.MaxZ);
+                    waterAreas.Add(area);
+                    RiverWaterAreaBounds.Add(new WaterAreaBoundsKey(poly.MinX, poly.MinZ, poly.MaxX, poly.MaxZ));
+                    added++;
+                }
+
+                Log($"AddPrebuiltWaterAreas: added {added} polygon(s), absorbed {absorbed} regenerated lake(s). " +
+                    $"waterAreas {waterAreasBefore} → {waterAreas.Count}; bounds tracked: {RiverWaterAreaBounds.Count}");
+                return added;
+            }
+            catch (Exception ex)
+            {
+                Log($"AddPrebuiltWaterAreas exception: {ex}");
+                return 0;
+            }
+        }
+
+        /// <summary>Build a name → SO map of <c>waterSettings.lakeTypes</c>
+        /// entries so saved polygons can reattach to the correct WaterType
+        /// by name on reload. Falls back gracefully on lookup failure.</summary>
+        private static Dictionary<string, UnityEngine.Object> BuildLakeTypeNameMap(TerrainGenerator tg)
+        {
+            var map = new Dictionary<string, UnityEngine.Object>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var wsField = tg.GetType().GetField("waterSettings",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var ws = wsField?.GetValue(tg);
+                if (ws == null) return map;
+                var lakeTypesField = ws.GetType().GetField("lakeTypes",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var lakeTypes = lakeTypesField?.GetValue(ws) as IList;
+                if (lakeTypes == null) return map;
+                foreach (var lt in lakeTypes)
+                {
+                    if (lt is UnityEngine.Object o && !string.IsNullOrEmpty(o.name))
+                        map[o.name] = o;
+                }
+            }
+            catch { }
+            return map;
+        }
+
+        /// <summary>v1/v2 fallback path: walk the sidecar's cp data and stamp
+        /// polygons via the gen-time merge logic, bypassing
+        /// <c>_generationData.rivers</c> (which FF clears on save-load).
+        /// Used by BTS03 postfix on reload when the sidecar predates v3 and
+        /// has no embedded polygon shapes — the v3 fast-path
+        /// <see cref="AddPrebuiltWaterAreas"/> is preferred when available.
+        /// </summary>
         public static int BuildAndAddFromSidecar(TerrainGenerator tg,
             List<RiverPersistence.RiverData> sidecarRivers)
         {

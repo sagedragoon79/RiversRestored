@@ -40,7 +40,16 @@ namespace RiversRestored.Patches
     internal static class RiverPersistence
     {
         const int SIDECAR_MAGIC = 0x52525452; // 'RRTR' (LE: little-endian artist's sigil)
-        const int SIDECAR_VERSION = 2; // v2 adds AnimationCurves per river
+        // Sidecar format history:
+        //   v1 — cps only (pos, height, width)
+        //   v2 — adds AnimationCurves per river
+        //   v3 — adds embedded polygon shapes per river (bbox, mask, waterTypeName).
+        //        On reload, BTS03 deserializes the polygons and slots them
+        //        directly into _generationData.waterAreas, skipping the
+        //        expensive walk-and-stamp + cell-adjacency merge that v1/v2
+        //        had to run. Reload time drops from seconds to milliseconds.
+        //        v1/v2 sidecars are still readable (we fall back to walk-and-stamp).
+        const int SIDECAR_VERSION = 3;
         const string SIDECAR_EXTENSION = ".rivers";
 
         // Restoration is gated behind these flags so we only restore once per
@@ -262,26 +271,32 @@ namespace RiversRestored.Patches
                 CachedSidecarData = riverData;
                 Log($"BTS03 postfix: cached {riverData.Count} rivers for next-save fallback.");
 
-                // ── KEY DISCOVERY (2026-04-26 reload test): FF's load
-                // doesn't deserialize the saved waterAreas list — it
-                // regenerates the list from seed data. Saved count was 33
-                // (with our 2 entries), reloaded count was 36 (no entries
-                // of ours). So saving river polygons via FF's serializer
-                // is futile.
-                //
-                // Pangu's polygons survive across reload because Pangu
-                // does the same thing we now do here: re-add at runtime
-                // post-load. We populate sidecar cps via SaveSidecar,
-                // and on load — right here — we walk those cps and
-                // stamp blobs again, mirroring exactly what we do at
-                // gen post-Stage-50 timing.
-                //
-                // Walk the sidecar's cp data and stamp polygons directly —
-                // we don't need to reconstruct _generationData.rivers, just
-                // run the same walk-and-stamp pass we do at gen.
+                // ── Reload-time water restoration ────────────────────────
+                // FF's load pipeline doesn't deserialize our waterAreas
+                // additions — it regenerates the list from seed. So we have
+                // to re-add our polygons here. Two paths:
+                //   v3 fast-path: sidecar carries the merged polygon shapes
+                //     directly. Just deserialize them into waterAreas.
+                //     Reload time: milliseconds.
+                //   v1/v2 fallback: sidecar has only cps. Walk and stamp
+                //     them through the merge logic to reconstruct the
+                //     polygons. Reload time: a few seconds for long rivers.
                 RiverWaterAreaBuilder.RiverWaterAreaBounds.Clear();
-                int reAdded = RiverWaterAreaBuilder.BuildAndAddFromSidecar(tg, riverData);
-                Log($"BTS03 postfix: re-added {reAdded} river polygon(s) post-load via walk-and-stamp.");
+                var embeddedPolys = new List<PolygonData>();
+                foreach (var rd in riverData)
+                    if (rd?.Polygons != null) embeddedPolys.AddRange(rd.Polygons);
+
+                int reAdded;
+                if (embeddedPolys.Count > 0)
+                {
+                    reAdded = RiverWaterAreaBuilder.AddPrebuiltWaterAreas(tg, embeddedPolys);
+                    Log($"BTS03 postfix: re-added {reAdded} river polygon(s) post-load via v3 fast-path (embedded shapes).");
+                }
+                else
+                {
+                    reAdded = RiverWaterAreaBuilder.BuildAndAddFromSidecar(tg, riverData);
+                    Log($"BTS03 postfix: re-added {reAdded} river polygon(s) post-load via v1/v2 walk-and-stamp fallback.");
+                }
 
                 // ── Force WaterPlane rebuild ─────────────────────────────
                 // FF's load pipeline doesn't build WaterChunk meshes for
@@ -409,6 +424,22 @@ namespace RiversRestored.Patches
                 {
                     dataToWrite = ConvertLiveRiversToRiverData(rivers);
                     source = "live data";
+
+                    // v3: capture the merged WaterArea polygon shapes from
+                    // _generationData.waterAreas (matched against
+                    // RiverWaterAreaBounds — those are the polygons WE added
+                    // or merged with at gen time). Embedding these in the
+                    // sidecar lets reload skip the expensive walk-and-stamp
+                    // and just slot the polygons straight into waterAreas.
+                    var capturedPolys = CaptureLivePolygonsForRivers(tg);
+                    if (capturedPolys.Count > 0 && dataToWrite.Count > 0)
+                    {
+                        // Attach all polygons to the first river entry (FF's
+                        // post-merge waterAreas don't preserve per-river
+                        // ownership, so we don't try to split them up).
+                        dataToWrite[0].Polygons = capturedPolys;
+                        source = $"live data + {capturedPolys.Count} embedded polygon(s)";
+                    }
                     // Cache what we're about to write so subsequent saves
                     // after a reload still have data even if FF clears the
                     // rivers list.
@@ -523,8 +554,9 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Serialize a RiverData list to the sidecar binary (v2
-        /// format). Single writer for both gen-time live data (converted via
+        /// <summary>Serialize a RiverData list to the sidecar binary (v3
+        /// format — cps + curves + embedded polygon shapes). Single writer
+        /// for both gen-time live data (converted via
         /// <see cref="ConvertLiveRiversToRiverData"/>) and reload-time
         /// cached data.</summary>
         private static int WriteSidecar(string path, List<RiverData> rivers)
@@ -538,7 +570,14 @@ namespace RiversRestored.Patches
                 bw.Write(rivers.Count);
                 foreach (var rd in rivers)
                 {
-                    if (rd == null) { bw.Write(0); WriteCurve(bw, null); WriteCurve(bw, null); continue; }
+                    if (rd == null)
+                    {
+                        bw.Write(0);
+                        WriteCurve(bw, null);
+                        WriteCurve(bw, null);
+                        bw.Write(0); // polygon count
+                        continue;
+                    }
                     bw.Write(rd.Points.Count);
                     foreach (var p in rd.Points)
                     {
@@ -549,6 +588,24 @@ namespace RiversRestored.Patches
                     }
                     WriteCurve(bw, rd.TransparencyCurve);
                     WriteCurve(bw, rd.ExtinctionCurve);
+
+                    // v3 polygon section. Empty list → 0 polygons (still
+                    // valid; reload falls back to walk-and-stamp from cps).
+                    int polyCount = rd.Polygons?.Count ?? 0;
+                    bw.Write(polyCount);
+                    if (rd.Polygons != null)
+                    {
+                        foreach (var poly in rd.Polygons)
+                        {
+                            bw.Write(poly.MinX);
+                            bw.Write(poly.MinZ);
+                            bw.Write(poly.MaxX);
+                            bw.Write(poly.MaxZ);
+                            bw.Write(poly.WaterTypeName ?? "");
+                            bw.Write(poly.PackedMask.Length);
+                            bw.Write(poly.PackedMask);
+                        }
+                    }
                 }
             }
             return totalPoints;
@@ -584,6 +641,68 @@ namespace RiversRestored.Patches
                 result.Add(rd);
             }
             return result;
+        }
+
+        /// <summary>Walk the live <c>_generationData.waterAreas</c> list and
+        /// pull out the polygon shapes whose bbox is registered in
+        /// <see cref="RiverWaterAreaBuilder.RiverWaterAreaBounds"/> — these
+        /// are "ours" (rivers, possibly merged with adjacent lakes/ocean).
+        /// Returns a flat list of PolygonData; the caller distributes them
+        /// across RiverData entries (currently we attach them all to river[0]
+        /// since FF doesn't preserve per-river → polygon ownership after the
+        /// merge step).</summary>
+        private static List<PolygonData> CaptureLivePolygonsForRivers(TerrainGenerator tg)
+        {
+            var captured = new List<PolygonData>();
+            try
+            {
+                var gdField = AccessTools.Field(typeof(TerrainGen.TerrainGenerator), "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd == null) return captured;
+                var waField = gd.GetType().GetField("waterAreas",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var was = waField?.GetValue(gd) as IList;
+                if (was == null) return captured;
+
+                Type? waType = AccessTools.TypeByName("TerrainGen.TerrainGenerator+WaterArea");
+                if (waType == null) return captured;
+                var fMinX = waType.GetField("minX");
+                var fMinZ = waType.GetField("minZ");
+                var fMaxX = waType.GetField("maxX");
+                var fMaxZ = waType.GetField("maxZ");
+                var fPoints = waType.GetField("points");
+                var fWT = waType.GetField("waterType");
+                if (fMinX == null || fMinZ == null || fMaxX == null || fMaxZ == null
+                    || fPoints == null || fWT == null) return captured;
+
+                foreach (var entry in was)
+                {
+                    if (entry == null) continue;
+                    int minX = (int)fMinX.GetValue(entry);
+                    int minZ = (int)fMinZ.GetValue(entry);
+                    int maxX = (int)fMaxX.GetValue(entry);
+                    int maxZ = (int)fMaxZ.GetValue(entry);
+                    var key = new RiverWaterAreaBuilder.WaterAreaBoundsKey(minX, minZ, maxX, maxZ);
+                    if (!RiverWaterAreaBuilder.RiverWaterAreaBounds.Contains(key)) continue;
+                    var mask = fPoints.GetValue(entry) as bool[,];
+                    if (mask == null) continue;
+                    var wt = fWT.GetValue(entry) as UnityEngine.Object;
+                    captured.Add(new PolygonData
+                    {
+                        MinX = minX,
+                        MinZ = minZ,
+                        MaxX = maxX,
+                        MaxZ = maxZ,
+                        WaterTypeName = wt?.name ?? "",
+                        PackedMask = PolygonData.PackMask(mask),
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"CaptureLivePolygonsForRivers exception: {ex.Message}");
+            }
+            return captured;
         }
 
         /// <summary>
@@ -918,16 +1037,78 @@ namespace RiversRestored.Patches
             public float Width;
         }
 
-        /// <summary>One river's worth of data plus its rendering curves.</summary>
+        /// <summary>One river's worth of data plus its rendering curves.
+        /// In v3 sidecars, also carries the merged WaterArea polygon shape(s)
+        /// that resulted from gen-time walk-and-stamp + Pangu-style merging,
+        /// so reload can deserialize the polygon directly instead of
+        /// re-walking the cps.</summary>
         public class RiverData
         {
             public System.Collections.Generic.List<PointData> Points = new();
             public AnimationCurve? TransparencyCurve;
             public AnimationCurve? ExtinctionCurve;
+            /// <summary>v3 polygon shapes (one or more per river — typically
+            /// one merged shape, but a river that splits across two disjoint
+            /// areas could have multiple). Null/empty when reading a v1/v2
+            /// sidecar — caller falls back to walk-and-stamp from cps.</summary>
+            public System.Collections.Generic.List<PolygonData>? Polygons;
         }
 
-        /// <summary>Read sidecar into a pure-data list. Handles v1 (no curves)
-        /// and v2 (with curves). Returns null on read failure.</summary>
+        /// <summary>One serialized WaterArea polygon shape. Mask is bit-packed
+        /// row-major (cell (x,z) is bit (z*width + x), low bit first).
+        /// WaterTypeName is the asset name of the SO — looked up in
+        /// waterSettings.lakeTypes on reload, with a lakeTypes[0] fallback if
+        /// not found.</summary>
+        public class PolygonData
+        {
+            public int MinX, MinZ, MaxX, MaxZ;
+            public string WaterTypeName = "";
+            public byte[] PackedMask = Array.Empty<byte>();
+
+            public int Width => MaxX - MinX + 1;
+            public int Height => MaxZ - MinZ + 1;
+
+            /// <summary>Decode the bit-packed mask into a bool[,] sized [Width, Height].</summary>
+            public bool[,] UnpackMask()
+            {
+                int w = Width, h = Height;
+                var result = new bool[w, h];
+                for (int z = 0; z < h; z++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        int idx = z * w + x;
+                        int byteIdx = idx >> 3;
+                        if (byteIdx >= PackedMask.Length) continue;
+                        if ((PackedMask[byteIdx] & (1 << (idx & 7))) != 0)
+                            result[x, z] = true;
+                    }
+                }
+                return result;
+            }
+
+            /// <summary>Encode a bool[,] mask into the packed-bytes representation.</summary>
+            public static byte[] PackMask(bool[,] mask)
+            {
+                int w = mask.GetLength(0), h = mask.GetLength(1);
+                int total = w * h;
+                var packed = new byte[(total + 7) >> 3];
+                for (int z = 0; z < h; z++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        if (!mask[x, z]) continue;
+                        int idx = z * w + x;
+                        packed[idx >> 3] |= (byte)(1 << (idx & 7));
+                    }
+                }
+                return packed;
+            }
+        }
+
+        /// <summary>Read sidecar into a pure-data list. Handles v1 (no curves),
+        /// v2 (curves) and v3 (curves + embedded polygons). Returns null on
+        /// read failure.</summary>
         public static System.Collections.Generic.List<RiverData>?
             ReadSidecarRivers(string path)
         {
@@ -938,7 +1119,7 @@ namespace RiversRestored.Patches
                 {
                     int magic = br.ReadInt32();
                     int version = br.ReadInt32();
-                    if (magic != SIDECAR_MAGIC || (version != 1 && version != 2))
+                    if (magic != SIDECAR_MAGIC || version < 1 || version > SIDECAR_VERSION)
                     {
                         Log($"ReadSidecarRivers: bad magic/version 0x{magic:X8}/v{version}");
                         return null;
@@ -964,6 +1145,25 @@ namespace RiversRestored.Patches
                         {
                             rd.TransparencyCurve = ReadCurve(br);
                             rd.ExtinctionCurve = ReadCurve(br);
+                        }
+                        if (version >= 3)
+                        {
+                            int polyCount = br.ReadInt32();
+                            rd.Polygons = new System.Collections.Generic.List<PolygonData>(polyCount);
+                            for (int q = 0; q < polyCount; q++)
+                            {
+                                var poly = new PolygonData
+                                {
+                                    MinX = br.ReadInt32(),
+                                    MinZ = br.ReadInt32(),
+                                    MaxX = br.ReadInt32(),
+                                    MaxZ = br.ReadInt32(),
+                                    WaterTypeName = br.ReadString(),
+                                };
+                                int packedLen = br.ReadInt32();
+                                poly.PackedMask = br.ReadBytes(packedLen);
+                                rd.Polygons.Add(poly);
+                            }
                         }
                         result.Add(rd);
                     }
