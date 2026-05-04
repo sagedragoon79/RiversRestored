@@ -3,7 +3,7 @@ using HarmonyLib;
 using MelonLoader;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rivers Restored v1.1.0
+//  Rivers Restored v1.1.1
 //
 //  Discovery: Farthest Frontier ships with a COMPLETE river generation system
 //  that simply isn't active on shipped maps. The Voronoi-based path generator,
@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.1.0", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.1.1", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -156,6 +156,14 @@ namespace RiversRestored
         /// Default true.</summary>
         public static MelonPreferences_Entry<bool>? EnableRibbonAnimation { get; private set; }
 
+        /// <summary>When true, ResolveRiverWaterType iterates waterSettings.lakeTypes
+        /// and prefers entries whose name contains "Lake" over "Pond". Gives
+        /// rivers consistent blue lake-like appearance across most map seeds.
+        /// When false, falls back to lakeTypes[0] (whatever happens to be
+        /// first — sometimes Pond, sometimes Lake, depending on seed). Default
+        /// true.</summary>
+        public static MelonPreferences_Entry<bool>? RiverPreferLakeWaterType { get; private set; }
+
         // ─────────────────────────────────────────────────────────────────
         public override void OnInitializeMelon()
         {
@@ -182,6 +190,16 @@ namespace RiversRestored
                              "scrolling and per-cp subdivisions can be expensive. " +
                              "Fishing, resource avoidance, save/reload, and the " +
                              "carved riverbed all still work unchanged when this is OFF.");
+
+            RiverPreferLakeWaterType = cat.CreateEntry("RiverPreferLakeWaterType", true,
+                display_name: "Prefer Lake (Blue) Water for Rivers",
+                description: "When ON (default): rivers use a Lake-type water " +
+                             "material — clear blue, like normal lakes. " +
+                             "When OFF: rivers use whatever water type the map " +
+                             "happens to assign first (often Pond — green/murky). " +
+                             "Pond water can look weird for rivers because it's " +
+                             "tinted muddy-green and has lower transparency. Leave " +
+                             "ON unless you specifically want green murky rivers.");
 
             NumRivers = cat.CreateEntry("NumRivers", 4,
                 display_name: "Number of Rivers",
@@ -245,15 +263,15 @@ namespace RiversRestored
                              "8+ = grand river. " +
                              "Bump River Bank Width with this so banks don't get too steep.");
 
-            RiverOuterRadius = cat.CreateEntry("RiverOuterRadius", 8,
+            RiverOuterRadius = cat.CreateEntry("RiverOuterRadius", 10,
                 display_name: "River Bank Width (slope to ground)",
                 description: "How far out the sloped banks extend before reaching " +
                              "natural ground level, measured in cells from centerline. " +
                              "The cells between Channel Width and Bank Width get a " +
                              "smooth ramp from riverbed up to terrain. " +
                              "(Bank Width − Channel Width) is the slope distance: " +
-                             "1 cell = sharp drop-off, 2-3 cells = natural slope (default), " +
-                             "5+ = very gradual sloping banks. Must be ≥ Channel Width.");
+                             "1 cell = sharp drop-off, 4 cells = lake-like blend (default), " +
+                             "6+ = very gradual sloping banks. Must be ≥ Channel Width.");
 
             RiverJitterAmplitude = cat.CreateEntry("RiverJitterAmplitude", 1.5f,
                 display_name: "River Meander Strength (metres)",
@@ -271,26 +289,26 @@ namespace RiversRestored
                              "Higher = more zigzaggy, lower = sweeping arcs. " +
                              "Has no effect if Meander Strength is 0.");
 
-            RiverSmoothPasses = cat.CreateEntry("RiverSmoothPasses", 2,
+            RiverSmoothPasses = cat.CreateEntry("RiverSmoothPasses", 6,
                 display_name: "Bank Smoothness",
                 description: "How many smoothing passes are applied to the riverbanks " +
                              "after carving. Smooths out the staircase look from the " +
                              "raw cell-by-cell carve. " +
                              "0 = no smoothing (rough/blocky banks), " +
-                             "2 = good default, " +
-                             "4 = gentler, " +
-                             "8 = very gentle. " +
+                             "2 = mild, " +
+                             "6 = lake-like softness (default), " +
+                             "8+ = very gentle. " +
                              "Each pass adds a couple seconds to map generation on large maps.");
 
-            RiverTrenchDepth = cat.CreateEntry("RiverTrenchDepth", 2.0f,
+            RiverTrenchDepth = cat.CreateEntry("RiverTrenchDepth", 1.8f,
                 display_name: "River Depth (metres below water)",
                 description: "How deep below the water surface the riverbed is dug, " +
                              "in metres. Affects how visibly 'wet' the river looks — " +
                              "shallow rivers can render patchy or transparent. " +
                              "1.5 = visibility floor (anything shallower may look thin), " +
-                             "2.0 = comfortable default, " +
-                             "3-4 = dramatic deeper rivers, " +
-                             "5+ = canyon-like. " +
+                             "1.8 = lake-like (default), " +
+                             "2.5 = noticeably deeper, " +
+                             "4+ = dramatic canyon rivers. " +
                              "Vanilla FF rivers carve 2-10m so this matches their calibration.");
 
             ForceCoastlineTerrain = cat.CreateEntry("ForceCoastlineTerrain", false,
@@ -361,7 +379,7 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.1.0 loaded. NumRivers={NumRivers.Value}, " +
+                Log.Msg($"[RR] Rivers Restored 1.1.1 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.

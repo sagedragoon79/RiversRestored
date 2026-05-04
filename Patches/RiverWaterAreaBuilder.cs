@@ -860,12 +860,38 @@ namespace RiversRestored.Patches
                     var lakeTypesField = ws.GetType().GetField("lakeTypes",
                         BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                     var lakeTypes = lakeTypesField?.GetValue(ws) as IList;
-                    if (lakeTypes != null && lakeTypes.Count > 0 && lakeTypes[0] is UnityEngine.Object first)
+                    if (lakeTypes != null && lakeTypes.Count > 0)
                     {
-                        _cachedRiverWaterType = first;
-                        Log($"ResolveRiverWaterType: borrowing waterSettings.lakeTypes[0] = '{first.name}' " +
-                            "(serialized with map → survives save/reload).");
-                        return first;
+                        bool preferLake = RiversRestoredMod.RiverPreferLakeWaterType?.Value ?? true;
+
+                        // First pass: if user prefers lake-type rivers, scan
+                        // for any entry whose name contains "Lake" (skipping
+                        // Pond / Ocean variants).
+                        if (preferLake)
+                        {
+                            foreach (var lt in lakeTypes)
+                            {
+                                if (!(lt is UnityEngine.Object o)) continue;
+                                string nm = o.name ?? "";
+                                if (nm.IndexOf("lake", StringComparison.OrdinalIgnoreCase) >= 0
+                                    && nm.IndexOf("ocean", StringComparison.OrdinalIgnoreCase) < 0)
+                                {
+                                    _cachedRiverWaterType = o;
+                                    Log($"ResolveRiverWaterType: prefer-lake → '{o.name}' " +
+                                        "(blue, lake-style; from waterSettings.lakeTypes).");
+                                    return o;
+                                }
+                            }
+                        }
+
+                        // Fallback path: take lakeTypes[0] regardless of name.
+                        if (lakeTypes[0] is UnityEngine.Object first)
+                        {
+                            _cachedRiverWaterType = first;
+                            Log($"ResolveRiverWaterType: borrowing waterSettings.lakeTypes[0] = '{first.name}' " +
+                                $"(preferLake={preferLake} but no lake-type entry found).");
+                            return first;
+                        }
                     }
                 }
 
