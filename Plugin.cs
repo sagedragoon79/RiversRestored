@@ -3,7 +3,7 @@ using HarmonyLib;
 using MelonLoader;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rivers Restored v1.2.1
+//  Rivers Restored v1.3.0
 //
 //  Discovery: Farthest Frontier ships with a COMPLETE river generation system
 //  that simply isn't active on shipped maps. The Voronoi-based path generator,
@@ -23,11 +23,39 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.2.1", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.3.0", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
 {
+    /// <summary>Directional bias for river drainage paths. When set to
+    /// anything except <see cref="None"/>, the heightmap is subtly tilted
+    /// at gen time before Stage 38's Voronoi pathfinder runs, so rivers
+    /// statistically prefer flowing from the named "high" corner toward
+    /// the named "low" corner. Strength is controlled by
+    /// <see cref="RiversRestoredMod.RiverFlowBiasStrength"/>.</summary>
+    public enum RiverFlowBiasMode
+    {
+        /// <summary>No bias — pure Voronoi seed-driven directions (default).</summary>
+        None,
+        /// <summary>High in NE, low in SW. Rivers flow from northeast to southwest.</summary>
+        NE_to_SW,
+        /// <summary>High in NW, low in SE. Rivers flow from northwest to southeast.</summary>
+        NW_to_SE,
+        /// <summary>High in SW, low in NE. Rivers flow from southwest to northeast.</summary>
+        SW_to_NE,
+        /// <summary>High in SE, low in NW. Rivers flow from southeast to northwest.</summary>
+        SE_to_NW,
+        /// <summary>High in N, low in S. Rivers flow from north to south.</summary>
+        N_to_S,
+        /// <summary>High in S, low in N. Rivers flow from south to north.</summary>
+        S_to_N,
+        /// <summary>High in E, low in W. Rivers flow from east to west.</summary>
+        E_to_W,
+        /// <summary>High in W, low in E. Rivers flow from west to east.</summary>
+        W_to_E,
+    }
+
     /// <summary>Preset bundles for river generation, named to match the
     /// map biomes available in Farthest Frontier's New Game UI. Selected via
     /// <see cref="RiversRestoredMod.RiverPreset"/> in the cfg / in-game
@@ -85,6 +113,21 @@ namespace RiversRestored
         /// edits still work either way. Toggling this re-applies hidden
         /// state on every entry without restart.</summary>
         public static MelonPreferences_Entry<bool> GranularSettings { get; private set; } = null!;
+
+        // ── River flow direction bias ──────────────────────────────────────
+        /// <summary>Tilt the heightmap before river-path generation so
+        /// rivers statistically flow from a chosen high corner/edge to a
+        /// chosen low one. Lets you guarantee scenic edge-to-edge rivers
+        /// in a desired direction without hand-painting paths.
+        /// FFModSettingsManager renders this as a dropdown.</summary>
+        public static MelonPreferences_Entry<RiverFlowBiasMode> RiverFlowBias { get; private set; } = null!;
+
+        /// <summary>How strongly to tilt the heightmap when
+        /// <see cref="RiverFlowBias"/> is non-None. Range 0.0–1.0. 0.3 is
+        /// a subtle hint (some rivers will still go their own way), 0.5
+        /// is reliable (most rivers follow the bias), 1.0 is dramatic
+        /// (visible map tilt, all rivers follow). Default 0.4.</summary>
+        public static MelonPreferences_Entry<float> RiverFlowBiasStrength { get; private set; } = null!;
 
         // ── Path / count ────────────────────────────────────────────────────
         /// <summary>Number of rivers the generator will attempt to produce
@@ -235,7 +278,7 @@ namespace RiversRestored
         private static readonly System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues> Presets
             = new System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues>
         {
-            // IdyllicValley is the recommended default — mirrors v1.2.1
+            // IdyllicValley is the recommended default — mirrors v1.3.0
             // calibrated baseline. Balanced rolling terrain with clean banks.
             [RiverPresetMode.IdyllicValley] = new RiverPresetValues
             {
@@ -355,6 +398,34 @@ namespace RiversRestored
                              "presets above are tuned for clean blending; recommended only for " +
                              "users who understand the trench/water/bank interaction. " +
                              "Granular sliders only take effect when River Preset is set to Custom.");
+
+            RiverFlowBias = cat.CreateEntry("RiverFlowBias", RiverFlowBiasMode.None,
+                display_name: "River Flow Direction Bias",
+                description: "Tilt the heightmap before river-path generation so rivers " +
+                             "statistically flow from a chosen high corner/edge to a chosen " +
+                             "low one. Useful for guaranteeing scenic edge-to-edge rivers " +
+                             "in a desired direction:\n" +
+                             "  None      — pure seed-driven directions (default, no bias)\n" +
+                             "  NE_to_SW  — high in NE, low in SW (rivers flow southwest)\n" +
+                             "  NW_to_SE  — high in NW, low in SE\n" +
+                             "  SW_to_NE  — high in SW, low in NE\n" +
+                             "  SE_to_NW  — high in SE, low in NW\n" +
+                             "  N_to_S, S_to_N, E_to_W, W_to_E  — cardinal directions\n" +
+                             "Bias is statistical — about 70-90% of rivers follow the chosen " +
+                             "direction depending on Strength. Lakes and other water bodies " +
+                             "are also nudged toward the low end (realistic — water pools " +
+                             "where it's lowest). Affects new map gens only; existing saves " +
+                             "unaffected.");
+
+            RiverFlowBiasStrength = cat.CreateEntry("RiverFlowBiasStrength", 0.4f,
+                display_name: "Flow Bias Strength",
+                description: "How strongly to tilt the heightmap when River Flow Direction " +
+                             "Bias is set. Range 0.0–1.0:\n" +
+                             "  0.3  — subtle (some rivers may still go their own way)\n" +
+                             "  0.4  — balanced default; reliable for most maps\n" +
+                             "  0.5  — strong (most rivers follow the bias)\n" +
+                             "  0.7+ — visible map tilt; can look unnatural in flat biomes\n" +
+                             "Has no effect when River Flow Direction Bias is None.");
 
             EnableRibbonAnimation = cat.CreateEntry("EnableRibbonAnimation", true,
                 display_name: "Enable Flowing-Water Animation",
@@ -570,7 +641,7 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.2.1 loaded. NumRivers={NumRivers.Value}, " +
+                Log.Msg($"[RR] Rivers Restored 1.3.0 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.
