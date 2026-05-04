@@ -3,7 +3,7 @@ using HarmonyLib;
 using MelonLoader;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rivers Restored v1.1.1
+//  Rivers Restored v1.2.0
 //
 //  Discovery: Farthest Frontier ships with a COMPLETE river generation system
 //  that simply isn't active on shipped maps. The Voronoi-based path generator,
@@ -23,11 +23,43 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.1.1", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.2.0", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
 {
+    /// <summary>Preset bundles for river generation, named to match the
+    /// map biomes available in Farthest Frontier's New Game UI. Selected via
+    /// <see cref="RiversRestoredMod.RiverPreset"/> in the cfg / in-game
+    /// settings. When set to anything other than <see cref="Custom"/>, the
+    /// preset's values override the individual granular cfg entries at
+    /// gen time.</summary>
+    public enum RiverPresetMode
+    {
+        /// <summary>Use the individual granular cfg values directly. Pick this
+        /// if you want full manual control over every slider.</summary>
+        Custom,
+        /// <summary>Balanced rolling-terrain biome. Default choice for most
+        /// players; produces medium-length winding rivers with clean banks.</summary>
+        IdyllicValley,
+        /// <summary>Flat biome with many ponds. Aggressively lowers
+        /// MinPoints so short Voronoi candidates pass validation, since
+        /// flat terrain can't produce long drainage paths. Shallow
+        /// narrow streams between water bodies.</summary>
+        LowlandLakes,
+        /// <summary>High dry biome with moderate elevation but sparse water.
+        /// Fewer rivers (arid), slightly narrower channels, deeper trenches
+        /// to read as rocky canyons.</summary>
+        AridHighlands,
+        /// <summary>Open semi-flat biome. Moderate river count and width;
+        /// gentler than LowlandLakes since terrain has slight gradient.</summary>
+        Plains,
+        /// <summary>Mountainous biome with valley drainages. Long deep
+        /// rivers, wide gradual banks, strong meander — alpine
+        /// drainage character.</summary>
+        AlpineValleys,
+    }
+
     public class RiversRestoredMod : MelonMod
     {
         public static RiversRestoredMod Instance { get; private set; } = null!;
@@ -38,6 +70,21 @@ namespace RiversRestored
         /// <summary>Kill-switch. When false, the mod does nothing — vanilla
         /// behavior resumes.</summary>
         public static MelonPreferences_Entry<bool> RiversEnabled { get; private set; } = null!;
+
+        // ── Preset chooser (drives all granular settings when != Custom) ────
+        /// <summary>Biome-style preset selector. When set to any value except
+        /// <see cref="RiverPresetMode.Custom"/>, the preset's bundled values
+        /// override the individual granular cfg entries at gen time. Pick
+        /// the option that matches the map-biome you're playing on.
+        /// FFModSettingsManager renders this as a dropdown.</summary>
+        public static MelonPreferences_Entry<RiverPresetMode> RiverPreset { get; private set; } = null!;
+
+        /// <summary>When false, the granular slider entries (NumRivers,
+        /// MinPoints, RiverInnerRadius, RiverOuterRadius, etc.) are hidden
+        /// from the in-game settings UI to keep the surface clean. Cfg-file
+        /// edits still work either way. Toggling this re-applies hidden
+        /// state on every entry without restart.</summary>
+        public static MelonPreferences_Entry<bool> GranularSettings { get; private set; } = null!;
 
         // ── Path / count ────────────────────────────────────────────────────
         /// <summary>Number of rivers the generator will attempt to produce
@@ -164,6 +211,111 @@ namespace RiversRestored
         /// true.</summary>
         public static MelonPreferences_Entry<bool>? RiverPreferLakeWaterType { get; private set; }
 
+        // ── Preset value table ─────────────────────────────────────────────
+        /// <summary>Bundle of preset values that override the granular cfg
+        /// entries when <see cref="RiverPreset"/> is anything other than
+        /// <see cref="RiverPresetMode.Custom"/>.</summary>
+        public struct RiverPresetValues
+        {
+            public int NumRivers;
+            public int MinPoints;
+            public int InnerRadius;
+            public int OuterRadius;
+            public int BlobRadius;
+            public int BlobStride;
+            public float TrenchDepth;
+            public int SmoothPasses;
+            public float JitterAmplitude;
+            public float JitterFrequency;
+            public int FishingAreaMultiplier;
+        }
+
+        // Preset values are tuned starting points — adjust over time as
+        // user feedback comes in. Names match FF's New Game biome selector.
+        private static readonly System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues> Presets
+            = new System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues>
+        {
+            // IdyllicValley is the recommended default — mirrors v1.2.0
+            // calibrated baseline. Balanced rolling terrain with clean banks.
+            [RiverPresetMode.IdyllicValley] = new RiverPresetValues
+            {
+                NumRivers = 4, MinPoints = 15,
+                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
+                TrenchDepth = 1.8f, SmoothPasses = 6,
+                JitterAmplitude = 1.5f, JitterFrequency = 0.6f,
+                FishingAreaMultiplier = 4,
+            },
+            // LowlandLakes: flat with ponds. Aggressive: short paths, more
+            // attempts, narrow shallow streams.
+            [RiverPresetMode.LowlandLakes] = new RiverPresetValues
+            {
+                NumRivers = 8, MinPoints = 6,
+                InnerRadius = 4, OuterRadius = 6, BlobRadius = 4, BlobStride = 2,
+                TrenchDepth = 1.2f, SmoothPasses = 8,
+                JitterAmplitude = 0.8f, JitterFrequency = 0.4f,
+                FishingAreaMultiplier = 5,
+            },
+            // AridHighlands: high but dry. Fewer rivers, narrower channels,
+            // deeper trenches to read as rocky.
+            [RiverPresetMode.AridHighlands] = new RiverPresetValues
+            {
+                NumRivers = 3, MinPoints = 18,
+                InnerRadius = 5, OuterRadius = 10, BlobRadius = 5, BlobStride = 3,
+                TrenchDepth = 2.5f, SmoothPasses = 5,
+                JitterAmplitude = 1.0f, JitterFrequency = 0.5f,
+                FishingAreaMultiplier = 3,
+            },
+            // Plains: open semi-flat. Moderate river count and width;
+            // less aggressive than LowlandLakes because there's slight gradient.
+            [RiverPresetMode.Plains] = new RiverPresetValues
+            {
+                NumRivers = 5, MinPoints = 10,
+                InnerRadius = 5, OuterRadius = 8, BlobRadius = 5, BlobStride = 2,
+                TrenchDepth = 1.5f, SmoothPasses = 7,
+                JitterAmplitude = 1.2f, JitterFrequency = 0.5f,
+                FishingAreaMultiplier = 4,
+            },
+            // AlpineValleys: mountains/valleys. Long deep alpine drainages
+            // with wide gradual banks and strong meander.
+            [RiverPresetMode.AlpineValleys] = new RiverPresetValues
+            {
+                NumRivers = 4, MinPoints = 20,
+                InnerRadius = 6, OuterRadius = 12, BlobRadius = 6, BlobStride = 3,
+                TrenchDepth = 3.0f, SmoothPasses = 4,
+                JitterAmplitude = 2.5f, JitterFrequency = 0.6f,
+                FishingAreaMultiplier = 4,
+            },
+        };
+
+        /// <summary>Resolve effective river-shape values, honoring the
+        /// preset selector. When RiverPreset is Custom (or unset), values
+        /// come from the individual granular cfg entries. Otherwise the
+        /// preset's bundled values win. Used by gen-time code in
+        /// RiverSettingsPatch / RiverCarver / RiverWaterAreaBuilder so
+        /// every gen-time read hits a single source of truth.</summary>
+        public static RiverPresetValues GetEffectiveValues()
+        {
+            var mode = RiverPreset?.Value ?? RiverPresetMode.IdyllicValley;
+            if (mode != RiverPresetMode.Custom && Presets.TryGetValue(mode, out var preset))
+                return preset;
+            // Custom: pull from individual cfg entries (with safe fallbacks
+            // so an uninitialized entry doesn't blow up gen).
+            return new RiverPresetValues
+            {
+                NumRivers = NumRivers?.Value ?? 4,
+                MinPoints = MinPoints?.Value > 0 ? MinPoints.Value : 15,
+                InnerRadius = RiverInnerRadius?.Value ?? 6,
+                OuterRadius = RiverOuterRadius?.Value ?? 10,
+                BlobRadius = RiverBlobRadius?.Value ?? 6,
+                BlobStride = RiverBlobStride?.Value ?? 3,
+                TrenchDepth = RiverTrenchDepth?.Value ?? 1.8f,
+                SmoothPasses = RiverSmoothPasses?.Value ?? 6,
+                JitterAmplitude = RiverJitterAmplitude?.Value ?? 1.5f,
+                JitterFrequency = RiverJitterFrequency?.Value ?? 0.6f,
+                FishingAreaMultiplier = RiverFishingAreaMultiplier?.Value ?? 4,
+            };
+        }
+
         // ─────────────────────────────────────────────────────────────────
         public override void OnInitializeMelon()
         {
@@ -177,6 +329,32 @@ namespace RiversRestored
                 description: "Master ON/OFF switch for the entire mod. " +
                              "Set to false to disable everything and play with " +
                              "vanilla behaviour (no rivers will generate).");
+
+            RiverPreset = cat.CreateEntry("RiverPreset", RiverPresetMode.IdyllicValley,
+                display_name: "River Preset (matches map biome)",
+                description: "Pre-tuned bundle of river settings. Pick the option " +
+                             "that matches your map's biome (names match the New Game " +
+                             "biome selector):\n" +
+                             "  IdyllicValley  — balanced rolling terrain (recommended default)\n" +
+                             "  LowlandLakes   — flat with ponds; short shallow streams\n" +
+                             "  AridHighlands  — high dry terrain; fewer narrower deeper rivers\n" +
+                             "  Plains         — open semi-flat; moderate width and count\n" +
+                             "  AlpineValleys  — mountains/valleys; long deep alpine drainages\n" +
+                             "  Custom         — use the individual sliders under 'Granular Settings'\n" +
+                             "When set to anything except Custom, the preset's values override " +
+                             "any individual slider settings — they're suppressed until you " +
+                             "switch back to Custom.");
+
+            GranularSettings = cat.CreateEntry("GranularSettings", false,
+                display_name: "Show Granular Settings (Advanced)",
+                description: "When ON, individual river-shaping sliders become visible " +
+                             "in the in-game settings UI (channel width, bank width, depth, " +
+                             "smoothness, jitter, etc.). " +
+                             "WARNING: setting custom values can produce visibly broken rivers " +
+                             "(visible trench bottom, water spillover, harsh banks). The " +
+                             "presets above are tuned for clean blending; recommended only for " +
+                             "users who understand the trench/water/bank interaction. " +
+                             "Granular sliders only take effect when River Preset is set to Custom.");
 
             EnableRibbonAnimation = cat.CreateEntry("EnableRibbonAnimation", true,
                 display_name: "Enable Flowing-Water Animation",
@@ -371,6 +549,19 @@ namespace RiversRestored
                              "for diagnosis. Leave OFF for normal play — the log gets " +
                              "noisy fast.");
 
+            // ── Apply granular-visibility based on cfg, and update on toggle ──
+            ApplyGranularVisibility();
+            try
+            {
+                GranularSettings.OnEntryValueChangedUntyped.Subscribe(
+                    (oldVal, newVal) => ApplyGranularVisibility());
+            }
+            catch (System.Exception ex)
+            {
+                Log.Warning($"[RR] Failed to subscribe to GranularSettings change event: {ex.Message}. " +
+                            "UI will only update visibility on next launch.");
+            }
+
             // ── Harmony ───────────────────────────────────────────────────
             HarmonyInstance = new HarmonyLib.Harmony("SageDragoon.RiversRestored");
 
@@ -379,7 +570,7 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.1.1 loaded. NumRivers={NumRivers.Value}, " +
+                Log.Msg($"[RR] Rivers Restored 1.2.0 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.
@@ -389,6 +580,51 @@ namespace RiversRestored
             {
                 Log.Error($"[RR] Failed to apply patches: {ex}");
             }
+        }
+
+        /// <summary>Toggle the IsHidden flag on every granular cfg entry
+        /// based on the current value of <see cref="GranularSettings"/>.
+        /// FFModSettingsManager (and other MelonPreferences-aware UIs that
+        /// respect IsHidden) will hide/show entries accordingly.
+        ///
+        /// The cfg text file always contains every entry — hiding only
+        /// affects the in-game UI. Power users hand-editing the cfg can
+        /// see and edit hidden entries directly.</summary>
+        private void ApplyGranularVisibility()
+        {
+            bool show = GranularSettings?.Value ?? false;
+            // Granular entries: every river-shaping slider that the
+            // RiverPreset overrides when active. Master toggles, presets,
+            // ribbon toggle, blue-water preference, and verbose-logging
+            // stay always-visible (those are basic-tier choices).
+            var granularEntries = new MelonPreferences_Entry?[]
+            {
+                NumRivers, MinPoints, MinWidth, MaxWidth, MinDepth, MaxDepth,
+                MarkWaterTypesAsRiverEnd,
+                RiverInnerRadius, RiverOuterRadius,
+                RiverJitterAmplitude, RiverJitterFrequency,
+                RiverSmoothPasses, RiverTrenchDepth,
+                ForceCoastlineTerrain,
+                RiverRegisterAsWaterArea,
+                RiverBlobRadius, RiverBlobStride,
+                RiverFishingAreaMultiplier,
+            };
+            int hiddenCount = 0;
+            foreach (var entry in granularEntries)
+            {
+                if (entry == null) continue;
+                try
+                {
+                    entry.IsHidden = !show;
+                    if (!show) hiddenCount++;
+                }
+                catch (System.Exception ex)
+                {
+                    Log.Warning($"[RR] Couldn't set IsHidden on '{entry.Identifier}': {ex.Message}");
+                }
+            }
+            Log.Msg($"[RR] Granular settings UI: {(show ? "VISIBLE" : "HIDDEN")} " +
+                    $"({granularEntries.Length} entries, {hiddenCount} hidden).");
         }
 
         /// <summary>

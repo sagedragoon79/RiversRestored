@@ -104,8 +104,9 @@ namespace RiversRestored.Patches
             {
                 if (!ResolveTypes()) return 0;
 
-                int blobRadius = RiversRestoredMod.RiverBlobRadius?.Value ?? 3;
-                int blobStride = RiversRestoredMod.RiverBlobStride?.Value ?? 3;
+                var effective = RiversRestoredMod.GetEffectiveValues();
+                int blobRadius = effective.BlobRadius;
+                int blobStride = effective.BlobStride;
                 if (blobRadius < 1) blobRadius = 1;
                 if (blobStride < 1) blobStride = 1;
 
@@ -651,8 +652,9 @@ namespace RiversRestored.Patches
                 if (!ResolveTypes()) return 0;
                 if (sidecarRivers == null || sidecarRivers.Count == 0) return 0;
 
-                int blobRadius = RiversRestoredMod.RiverBlobRadius?.Value ?? 3;
-                int blobStride = RiversRestoredMod.RiverBlobStride?.Value ?? 3;
+                var effective = RiversRestoredMod.GetEffectiveValues();
+                int blobRadius = effective.BlobRadius;
+                int blobStride = effective.BlobStride;
                 if (blobRadius < 1) blobRadius = 1;
                 if (blobStride < 1) blobStride = 1;
 
@@ -727,8 +729,9 @@ namespace RiversRestored.Patches
             {
                 if (!ResolveTypes()) return 0;
 
-                int blobRadius = RiversRestoredMod.RiverBlobRadius?.Value ?? 3;
-                int blobStride = RiversRestoredMod.RiverBlobStride?.Value ?? 3;
+                var effective = RiversRestoredMod.GetEffectiveValues();
+                int blobRadius = effective.BlobRadius;
+                int blobStride = effective.BlobStride;
                 if (blobRadius < 1) blobRadius = 1;
                 if (blobStride < 1) blobStride = 1;
 

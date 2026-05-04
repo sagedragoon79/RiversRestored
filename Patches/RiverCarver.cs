@@ -365,7 +365,8 @@ namespace RiversRestored.Patches
                     if (ghMI != null) waterHeight = (float)ghMI.Invoke(__instance, null);
                 }
                 catch { }
-                float trenchDepth = RiversRestoredMod.RiverTrenchDepth?.Value ?? 0.5f;
+                var effective = RiversRestoredMod.GetEffectiveValues();
+                float trenchDepth = effective.TrenchDepth;
                 float trenchHeight = waterHeight - trenchDepth;
                 Log($"Carve target: waterHeight={waterHeight:F2}  trenchHeight={trenchHeight:F2}  width=±3 cells");
 
@@ -475,10 +476,10 @@ namespace RiversRestored.Patches
                 //   outerRadius — blend zone (smoothstep back up to original)
                 // Plus path jitter: subdivide each segment with sinusoidal
                 // perpendicular offset for a meandering look.
-                int innerRadius = RiversRestoredMod.RiverInnerRadius?.Value ?? 3;
-                int outerRadius = RiversRestoredMod.RiverOuterRadius?.Value ?? 5;
-                float jitterAmp = RiversRestoredMod.RiverJitterAmplitude?.Value ?? 1.5f;
-                float jitterFreq = RiversRestoredMod.RiverJitterFrequency?.Value ?? 0.6f;
+                int innerRadius = effective.InnerRadius;
+                int outerRadius = effective.OuterRadius;
+                float jitterAmp = effective.JitterAmplitude;
+                float jitterFreq = effective.JitterFrequency;
                 Log($"  Bank profile: innerRadius={innerRadius} outerRadius={outerRadius}  " +
                     $"jitter amp={jitterAmp} freq={jitterFreq}");
                 int allMinX = int.MaxValue, allMinZ = int.MaxValue;
@@ -542,7 +543,7 @@ namespace RiversRestored.Patches
                 if (totalCells > 0 && allMinX < int.MaxValue)
                 {
                     // Pad by outer radius + smoothing reach so chunk edges resolve cleanly
-                    int smoothPasses = RiversRestoredMod.RiverSmoothPasses?.Value ?? 4;
+                    int smoothPasses = effective.SmoothPasses;
                     int pad = outerRadius + smoothPasses + 2;
                     int rMinX = Math.Max(0, allMinX - pad);
                     int rMinZ = Math.Max(0, allMinZ - pad);

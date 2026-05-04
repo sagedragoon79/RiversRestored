@@ -197,7 +197,7 @@ namespace RiversRestored.Patches
         {
             try
             {
-                int multiplier = RiversRestoredMod.RiverFishingAreaMultiplier?.Value ?? 4;
+                int multiplier = RiversRestoredMod.GetEffectiveValues().FishingAreaMultiplier;
                 if (multiplier <= 1 || __result == null || __result.Count == 0) return;
                 if (RiverFishAreaIds.Count == 0) return;
 

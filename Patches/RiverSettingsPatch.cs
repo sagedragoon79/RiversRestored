@@ -609,10 +609,13 @@ namespace RiversRestored.Patches
                 float curMinDepth = (float)rsType.GetField("minDepth").GetValue(rsBox);
                 float curMaxDepth = (float)rsType.GetField("maxDepth").GetValue(rsBox);
 
-                // Compute what we WANT
-                int wantNumRivers = RiversRestoredMod.NumRivers.Value;
-                int wantMinPoints = RiversRestoredMod.MinPoints.Value > 0
-                    ? RiversRestoredMod.MinPoints.Value : curMinPoints;
+                // Compute what we WANT — preset values for NumRivers / MinPoints,
+                // user's individual cfg for the legacy width/depth settings
+                // (those aren't in our preset table since they affect ribbon
+                // rendering, not the carved trench geometry).
+                var effective = RiversRestoredMod.GetEffectiveValues();
+                int wantNumRivers = effective.NumRivers;
+                int wantMinPoints = effective.MinPoints > 0 ? effective.MinPoints : curMinPoints;
                 int wantMinWidth = RiversRestoredMod.MinWidth.Value > 0
                     ? RiversRestoredMod.MinWidth.Value : curMinWidth;
                 int wantMaxWidth = RiversRestoredMod.MaxWidth.Value > 0
