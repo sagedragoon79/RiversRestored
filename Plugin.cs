@@ -3,7 +3,7 @@ using HarmonyLib;
 using MelonLoader;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rivers Restored v1.2.0
+//  Rivers Restored v1.2.1
 //
 //  Discovery: Farthest Frontier ships with a COMPLETE river generation system
 //  that simply isn't active on shipped maps. The Voronoi-based path generator,
@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.2.0", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.2.1", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -235,7 +235,7 @@ namespace RiversRestored
         private static readonly System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues> Presets
             = new System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues>
         {
-            // IdyllicValley is the recommended default — mirrors v1.2.0
+            // IdyllicValley is the recommended default — mirrors v1.2.1
             // calibrated baseline. Balanced rolling terrain with clean banks.
             [RiverPresetMode.IdyllicValley] = new RiverPresetValues
             {
@@ -570,7 +570,7 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.2.0 loaded. NumRivers={NumRivers.Value}, " +
+                Log.Msg($"[RR] Rivers Restored 1.2.1 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.

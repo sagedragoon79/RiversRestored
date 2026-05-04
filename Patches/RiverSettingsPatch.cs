@@ -625,7 +625,19 @@ namespace RiversRestored.Patches
                 float wantMaxDepth = RiversRestoredMod.MaxDepth.Value >= 0f
                     ? RiversRestoredMod.MaxDepth.Value : curMaxDepth;
 
-                // Already matches? Silent no-op.
+                // Fresh generation starting — reset the stage-injection guards
+                // so InjectStage38Postfix / InjectStage60Postfix will fire
+                // exactly once per map gen. This runs on EVERY gen entry
+                // (including Pangu-style seed previews that don't change
+                // riverSettings between rolls); without this reset the
+                // guards persist from the previous gen and subsequent
+                // injections get skipped with "Stage38 already ran this gen".
+                _stage38AlreadyRanThisGen = false;
+                _stage60AlreadyRanThisGen = false;
+                RiverCarver.ResetGuard();
+
+                // Already matches? Silent no-op for the riverSettings mutation
+                // (guards above already reset, so re-previews work).
                 if (curNumRivers == wantNumRivers &&
                     curMinPoints == wantMinPoints &&
                     curMinWidth == wantMinWidth &&
@@ -640,13 +652,6 @@ namespace RiversRestored.Patches
                     $"[RR] {firedFrom}  Pre:  numRivers={curNumRivers}  minPoints={curMinPoints}  " +
                     $"width={curMinWidth}-{curMaxWidth}  depth={curMinDepth:F2}-{curMaxDepth:F2}  " +
                     $"isValueType={isStruct}");
-
-                // Fresh generation starting — reset the stage-injection guards
-                // so InjectStage38Postfix / InjectStage60Postfix will fire
-                // exactly once per map gen.
-                _stage38AlreadyRanThisGen = false;
-                _stage60AlreadyRanThisGen = false;
-                RiverCarver.ResetGuard();
 
                 // Mutate the box
                 rsType.GetField("numRivers").SetValue(rsBox, wantNumRivers);
