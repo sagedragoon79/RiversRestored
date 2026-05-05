@@ -242,12 +242,24 @@ namespace RiversRestored.Patches
                 // [0, 1] where t=0 at the LOW corner/edge and t=1 at the HIGH.
                 // Then bias = (t - 0.5) * 2 * maxBias  → range [-maxBias, +maxBias].
                 // Add bias to existing heightNoise[x, z] in-place.
+                //
+                // FF's heightmap-to-screen mapping is inverted on BOTH axes
+                // from naive Unity conventions: heightNoise[0,0] appears as
+                // the screen-NE corner, heightNoise[hmRes-1, hmRes-1] as
+                // screen-SW. Verified empirically: with the original
+                // formulas, NE_to_SW produced rivers flowing toward NE
+                // (i.e., raised the screen-SW corner, not NE).
+                //
+                // To make the named directions match what the player sees,
+                // we define fx and fz so that fx=1 maps to screen-east and
+                // fz=1 maps to screen-north. Given the inversion, that
+                // means fx=1 when heightmap x=0, and fz=1 when heightmap z=0.
                 for (int x = 0; x < w; x++)
                 {
                     for (int z = 0; z < h; z++)
                     {
-                        float fx = (float)x / (w - 1);   // 0..1 along W-E
-                        float fz = (float)z / (h - 1);   // 0..1 along S-N (assumes z=0 is south)
+                        float fx = 1f - (float)x / (w - 1);   // fx=1 → screen east
+                        float fz = 1f - (float)z / (h - 1);   // fz=1 → screen north
                         float t;
                         switch (mode)
                         {
@@ -702,17 +714,15 @@ namespace RiversRestored.Patches
                 float curMinDepth = (float)rsType.GetField("minDepth").GetValue(rsBox);
                 float curMaxDepth = (float)rsType.GetField("maxDepth").GetValue(rsBox);
 
-                // Compute what we WANT — preset values for NumRivers / MinPoints,
-                // user's individual cfg for the legacy width/depth settings
-                // (those aren't in our preset table since they affect ribbon
-                // rendering, not the carved trench geometry).
+                // Compute what we WANT — preset values for NumRivers / MinPoints
+                // / MinWidth / MaxWidth (per-biome ribbon width). Depth fields
+                // aren't in the preset table since they're FF's vanilla legacy
+                // controls; we keep individual cfg behavior for those.
                 var effective = RiversRestoredMod.GetEffectiveValues();
                 int wantNumRivers = effective.NumRivers;
                 int wantMinPoints = effective.MinPoints > 0 ? effective.MinPoints : curMinPoints;
-                int wantMinWidth = RiversRestoredMod.MinWidth.Value > 0
-                    ? RiversRestoredMod.MinWidth.Value : curMinWidth;
-                int wantMaxWidth = RiversRestoredMod.MaxWidth.Value > 0
-                    ? RiversRestoredMod.MaxWidth.Value : curMaxWidth;
+                int wantMinWidth = effective.MinWidth > 0 ? effective.MinWidth : curMinWidth;
+                int wantMaxWidth = effective.MaxWidth > 0 ? effective.MaxWidth : curMaxWidth;
                 float wantMinDepth = RiversRestoredMod.MinDepth.Value >= 0f
                     ? RiversRestoredMod.MinDepth.Value : curMinDepth;
                 float wantMaxDepth = RiversRestoredMod.MaxDepth.Value >= 0f

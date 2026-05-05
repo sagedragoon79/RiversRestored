@@ -262,6 +262,8 @@ namespace RiversRestored
         {
             public int NumRivers;
             public int MinPoints;
+            public int MinWidth;     // ribbon mesh min width (cells), 0 = vanilla 2-8
+            public int MaxWidth;     // ribbon mesh max width (cells), 0 = vanilla 2-8
             public int InnerRadius;
             public int OuterRadius;
             public int BlobRadius;
@@ -283,6 +285,7 @@ namespace RiversRestored
             [RiverPresetMode.IdyllicValley] = new RiverPresetValues
             {
                 NumRivers = 4, MinPoints = 15,
+                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
                 InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 1.8f, SmoothPasses = 6,
                 JitterAmplitude = 1.5f, JitterFrequency = 0.6f,
@@ -293,6 +296,7 @@ namespace RiversRestored
             [RiverPresetMode.LowlandLakes] = new RiverPresetValues
             {
                 NumRivers = 8, MinPoints = 6,
+                MinWidth = 4, MaxWidth = 8,     // narrow streams in 8-cell polygon
                 InnerRadius = 4, OuterRadius = 6, BlobRadius = 4, BlobStride = 2,
                 TrenchDepth = 1.2f, SmoothPasses = 8,
                 JitterAmplitude = 0.8f, JitterFrequency = 0.4f,
@@ -303,6 +307,7 @@ namespace RiversRestored
             [RiverPresetMode.AridHighlands] = new RiverPresetValues
             {
                 NumRivers = 3, MinPoints = 18,
+                MinWidth = 6, MaxWidth = 10,    // moderate ribbon in 10-cell polygon
                 InnerRadius = 5, OuterRadius = 10, BlobRadius = 5, BlobStride = 3,
                 TrenchDepth = 2.5f, SmoothPasses = 5,
                 JitterAmplitude = 1.0f, JitterFrequency = 0.5f,
@@ -313,6 +318,7 @@ namespace RiversRestored
             [RiverPresetMode.Plains] = new RiverPresetValues
             {
                 NumRivers = 5, MinPoints = 10,
+                MinWidth = 6, MaxWidth = 10,    // moderate ribbon in 10-cell polygon
                 InnerRadius = 5, OuterRadius = 8, BlobRadius = 5, BlobStride = 2,
                 TrenchDepth = 1.5f, SmoothPasses = 7,
                 JitterAmplitude = 1.2f, JitterFrequency = 0.5f,
@@ -323,6 +329,7 @@ namespace RiversRestored
             [RiverPresetMode.AlpineValleys] = new RiverPresetValues
             {
                 NumRivers = 4, MinPoints = 20,
+                MinWidth = 10, MaxWidth = 14,   // big rivers in 12-cell polygon
                 InnerRadius = 6, OuterRadius = 12, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 3.0f, SmoothPasses = 4,
                 JitterAmplitude = 2.5f, JitterFrequency = 0.6f,
@@ -347,6 +354,8 @@ namespace RiversRestored
             {
                 NumRivers = NumRivers?.Value ?? 4,
                 MinPoints = MinPoints?.Value > 0 ? MinPoints.Value : 15,
+                MinWidth = MinWidth?.Value ?? 0,    // 0 = vanilla 2-8
+                MaxWidth = MaxWidth?.Value ?? 0,    // 0 = vanilla 2-8
                 InnerRadius = RiverInnerRadius?.Value ?? 6,
                 OuterRadius = RiverOuterRadius?.Value ?? 10,
                 BlobRadius = RiverBlobRadius?.Value ?? 6,
