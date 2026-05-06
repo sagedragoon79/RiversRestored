@@ -243,23 +243,28 @@ namespace RiversRestored.Patches
                 // Then bias = (t - 0.5) * 2 * maxBias  → range [-maxBias, +maxBias].
                 // Add bias to existing heightNoise[x, z] in-place.
                 //
-                // FF's heightmap-to-screen mapping is inverted on BOTH axes
-                // from naive Unity conventions: heightNoise[0,0] appears as
-                // the screen-NE corner, heightNoise[hmRes-1, hmRes-1] as
-                // screen-SW. Verified empirically: with the original
-                // formulas, NE_to_SW produced rivers flowing toward NE
-                // (i.e., raised the screen-SW corner, not NE).
+                // FF's heightmap-to-screen mapping (verified empirically by
+                // testing N_to_S in-game and observing ribbon flow direction):
+                //   X axis: heightmap x=0 corresponds to screen-east,
+                //           x=max corresponds to screen-west. INVERTED.
+                //   Z axis: heightmap z=0 corresponds to screen-south,
+                //           z=max corresponds to screen-north. NOT inverted.
                 //
-                // To make the named directions match what the player sees,
-                // we define fx and fz so that fx=1 maps to screen-east and
-                // fz=1 maps to screen-north. Given the inversion, that
-                // means fx=1 when heightmap x=0, and fz=1 when heightmap z=0.
+                // We define fx and fz so that fx=1 maps to screen-east and
+                // fz=1 maps to screen-north. Given the X inversion, that
+                // means fx=1 when heightmap x=0. Z is naturally aligned, so
+                // fz=1 when heightmap z=max.
+                //
+                // Earlier "both axes inverted" guess was based on Pangu's
+                // preview thumbnail flow direction, which apparently mirrors
+                // Z relative to the in-game render. In-game animation is
+                // the authoritative reference.
                 for (int x = 0; x < w; x++)
                 {
                     for (int z = 0; z < h; z++)
                     {
-                        float fx = 1f - (float)x / (w - 1);   // fx=1 → screen east
-                        float fz = 1f - (float)z / (h - 1);   // fz=1 → screen north
+                        float fx = 1f - (float)x / (w - 1);   // fx=1 → screen east (x inverted)
+                        float fz = (float)z / (h - 1);        // fz=1 → screen north (z natural)
                         float t;
                         switch (mode)
                         {

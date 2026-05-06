@@ -291,35 +291,41 @@ namespace RiversRestored
                 JitterAmplitude = 1.5f, JitterFrequency = 0.6f,
                 FishingAreaMultiplier = 4,
             },
-            // LowlandLakes: flat with ponds. Aggressive: short paths, more
-            // attempts, narrow shallow streams.
+            // LowlandLakes: flat with ponds. Aggressive count + short paths,
+            // but polygon footprint matched to IdyllicValley so the merged
+            // shape clears FF's Lake-area threshold (otherwise reload tags
+            // it as Pond and water can fail to render).
             [RiverPresetMode.LowlandLakes] = new RiverPresetValues
             {
                 NumRivers = 8, MinPoints = 6,
-                MinWidth = 4, MaxWidth = 8,     // narrow streams in 8-cell polygon
-                InnerRadius = 4, OuterRadius = 6, BlobRadius = 4, BlobStride = 2,
+                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
+                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 1.2f, SmoothPasses = 8,
                 JitterAmplitude = 0.8f, JitterFrequency = 0.4f,
                 FishingAreaMultiplier = 5,
             },
-            // AridHighlands: high but dry. Fewer rivers, narrower channels,
-            // deeper trenches to read as rocky.
+            // AridHighlands: high but dry. Fewer rivers, deeper trenches to
+            // read as rocky. Polygon footprint matched to IdyllicValley so
+            // the merged shape clears FF's Lake-area threshold.
             [RiverPresetMode.AridHighlands] = new RiverPresetValues
             {
                 NumRivers = 3, MinPoints = 18,
-                MinWidth = 6, MaxWidth = 10,    // moderate ribbon in 10-cell polygon
-                InnerRadius = 5, OuterRadius = 10, BlobRadius = 5, BlobStride = 3,
+                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
+                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 2.5f, SmoothPasses = 5,
                 JitterAmplitude = 1.0f, JitterFrequency = 0.5f,
                 FishingAreaMultiplier = 3,
             },
-            // Plains: open semi-flat. Moderate river count and width;
-            // less aggressive than LowlandLakes because there's slight gradient.
+            // Plains: open semi-flat. Moderate river count; polygon footprint
+            // matched to IdyllicValley so the merged shape clears FF's
+            // Lake-area threshold (Plains has slight gradient — leaving the
+            // pre-bump narrow geometry caused reload-time Pond classification
+            // and missing water).
             [RiverPresetMode.Plains] = new RiverPresetValues
             {
                 NumRivers = 5, MinPoints = 10,
-                MinWidth = 6, MaxWidth = 10,    // moderate ribbon in 10-cell polygon
-                InnerRadius = 5, OuterRadius = 8, BlobRadius = 5, BlobStride = 2,
+                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
+                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 1.5f, SmoothPasses = 7,
                 JitterAmplitude = 1.2f, JitterFrequency = 0.5f,
                 FishingAreaMultiplier = 4,
