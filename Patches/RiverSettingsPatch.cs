@@ -811,18 +811,39 @@ namespace RiversRestored.Patches
         /// the carve overwrites correct saved state with new (wrong) data,
         /// which is what causes the post-reload yellow banks.
         /// </summary>
+        // Cached reflection handles for IsLoadingSavedMap. This method is
+        // called from OnUpdate every frame; the original implementation
+        // re-resolved both FieldInfos per call (4 type-table walks/frame).
+        // Cached once per process — TerrainGenerator and its _generationData
+        // type are stable for the runtime, so cache invalidation isn't needed.
+        private static FieldInfo? _gdField;
+        private static FieldInfo? _useSavedField;
+        private static Type? _gdFieldOwnerType;       // sanity guard
+        private static Type? _useSavedFieldOwnerType; // sanity guard
+
         public static bool IsLoadingSavedMap(TerrainGenerator __instance)
         {
             try
             {
-                var gdField = __instance.GetType().GetField("_generationData",
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                var gd = gdField?.GetValue(__instance);
+                var instType = __instance.GetType();
+                if (_gdField == null || _gdFieldOwnerType != instType)
+                {
+                    _gdField = instType.GetField("_generationData",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    _gdFieldOwnerType = instType;
+                }
+                var gd = _gdField?.GetValue(__instance);
                 if (gd == null) return false;
-                var useSavedField = gd.GetType().GetField("useSavedMap",
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                if (useSavedField == null) return false;
-                return (bool)useSavedField.GetValue(gd);
+
+                var gdType = gd.GetType();
+                if (_useSavedField == null || _useSavedFieldOwnerType != gdType)
+                {
+                    _useSavedField = gdType.GetField("useSavedMap",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    _useSavedFieldOwnerType = gdType;
+                }
+                if (_useSavedField == null) return false;
+                return (bool)_useSavedField.GetValue(gd);
             }
             catch { return false; }
         }
