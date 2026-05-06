@@ -786,6 +786,16 @@ namespace RiversRestored.Patches
                 if (RiversRestoredMod.MarkWaterTypesAsRiverEnd.Value)
                     MarkAllWaterTypesAsRiverEnd();
 
+                // ── One-shot water/terrain settings dump ──────────────────
+                // Reflection-walks every field on waterSettings, riverSettings,
+                // baseSettings, mapSettings, biomeSettings, and per-WaterType
+                // SO. Output supports the WATER_LEVERS.md doc effort — once
+                // we capture a dump from a real gen, sections 2-4 can be
+                // populated with concrete field lists and types. Always-on
+                // (not gated by VerboseDiagnostics) so a single fresh gen
+                // captures the data without requiring config changes.
+                DumpWaterSettings(__instance);
+
                 // ── Diagnostic: force terrainType = Coastline ─────────────
                 if (RiversRestoredMod.ForceCoastlineTerrain.Value)
                     ForceCoastlineTerrainType();
@@ -1306,6 +1316,223 @@ namespace RiversRestored.Patches
             catch (Exception ex)
             {
                 RiversRestoredMod.Log.Error($"[RR] DumpAllTerrainBiomes failed: {ex}");
+            }
+        }
+
+        // One-shot guard for the water-settings dump. Set the first time
+        // DumpWaterSettings() runs in this process; subsequent calls early-out.
+        private static bool _dumpedWaterSettings = false;
+
+        /// <summary>
+        /// One-shot reflection dump of every water/terrain-related settings
+        /// field reachable from TerrainGenerator. Output is grouped by source
+        /// struct/SO and uses the [RR][WaterDump] log prefix so the user can
+        /// grep cleanly.
+        ///
+        /// Targets walked:
+        ///   • TerrainGenerator.waterSettings  (lake/pond gen knobs)
+        ///   • TerrainGenerator.riverSettings  (river-side knobs)
+        ///   • TerrainGenerator.baseSettings   (scaling/noise)
+        ///   • TerrainGenerator.mapSettings    (map dimensions)
+        ///   • TerrainGenerator.biomeSettings  (if present — biome-tuned water)
+        ///   • Per-WaterType SO in waterSettings.lakeTypes
+        ///
+        /// Output supports the WATER_LEVERS.md doc — captures the canonical
+        /// list of every reachable knob so we can decide which to expose as
+        /// new MelonPreferences entries in a follow-up planning round.
+        /// </summary>
+        private static void DumpWaterSettings(TerrainGenerator tg)
+        {
+            if (_dumpedWaterSettings) return;
+            if (tg == null) return;
+            _dumpedWaterSettings = true;
+
+            try
+            {
+                Type tgType = tg.GetType();
+                RiversRestoredMod.Log.Msg(
+                    "[RR][WaterDump] ===== begin (one-shot, gen-entry) =====");
+                RiversRestoredMod.Log.Msg(
+                    $"[RR][WaterDump] TerrainGenerator type: {tgType.FullName}");
+
+                // Walk the named settings structs/objects on TG.
+                string[] settingsFields = new[]
+                {
+                    "waterSettings",
+                    "riverSettings",
+                    "baseSettings",
+                    "mapSettings",
+                    "biomeSettings",
+                };
+
+                foreach (var fieldName in settingsFields)
+                {
+                    var f = WalkUpForField(tgType, fieldName);
+                    if (f == null)
+                    {
+                        RiversRestoredMod.Log.Msg(
+                            $"[RR][WaterDump] {fieldName}: <field not present on TerrainGenerator>");
+                        continue;
+                    }
+                    object val;
+                    try { val = f.GetValue(tg); }
+                    catch (Exception ex)
+                    {
+                        RiversRestoredMod.Log.Msg(
+                            $"[RR][WaterDump] {fieldName}: <GetValue failed: {ex.Message}>");
+                        continue;
+                    }
+                    DumpSettingsObject(fieldName, val, f.FieldType);
+                }
+
+                // WaterType list — dump each entry's serialized fields.
+                DumpWaterTypes(tg, tgType);
+
+                RiversRestoredMod.Log.Msg(
+                    "[RR][WaterDump] ===== end =====");
+            }
+            catch (Exception ex)
+            {
+                RiversRestoredMod.Log.Error(
+                    $"[RR][WaterDump] failed: {ex}");
+            }
+        }
+
+        /// <summary>
+        /// Dump every public + non-public instance field on the given
+        /// settings object. Walks the inheritance chain. For nested object
+        /// references, logs type + ToString() rather than recursing
+        /// unboundedly. AnimationCurves are summarized by key count only.
+        /// Arrays/lists are summarized as (count + first-3-element types).
+        /// </summary>
+        private static void DumpSettingsObject(string label, object obj, Type declaredType)
+        {
+            if (obj == null)
+            {
+                RiversRestoredMod.Log.Msg(
+                    $"[RR][WaterDump] {label}: <null> (declared type {declaredType.FullName})");
+                return;
+            }
+            Type actual = obj.GetType();
+            RiversRestoredMod.Log.Msg(
+                $"[RR][WaterDump] ----- {label} ({actual.FullName}) -----");
+
+            Type? walker = actual;
+            int totalFields = 0;
+            while (walker != null && walker != typeof(object) &&
+                   walker != typeof(UnityEngine.MonoBehaviour) &&
+                   walker != typeof(UnityEngine.Behaviour) &&
+                   walker != typeof(UnityEngine.Component) &&
+                   walker != typeof(UnityEngine.ScriptableObject) &&
+                   walker != typeof(UnityEngine.Object))
+            {
+                foreach (var f in walker.GetFields(BindingFlags.Public | BindingFlags.NonPublic |
+                                                    BindingFlags.Instance | BindingFlags.DeclaredOnly))
+                {
+                    totalFields++;
+                    string repr = SafeRepr(f, obj);
+                    RiversRestoredMod.Log.Msg(
+                        $"[RR][WaterDump]   {walker.Name}::{f.Name} : {f.FieldType.Name} = {repr}");
+                }
+                walker = walker.BaseType;
+            }
+            if (totalFields == 0)
+                RiversRestoredMod.Log.Msg($"[RR][WaterDump]   <no instance fields>");
+        }
+
+        /// <summary>
+        /// Read a single field's value into a short loggable string. Handles
+        /// nulls, primitives, AnimationCurves (key count), arrays/lists
+        /// (count + element type), and UnityEngine.Object (name + type).
+        /// Falls through to ToString() for anything else.
+        /// </summary>
+        private static string SafeRepr(FieldInfo f, object owner)
+        {
+            try
+            {
+                object val = f.GetValue(owner);
+                if (val == null) return "<null>";
+
+                if (val is AnimationCurve ac)
+                    return $"<AnimationCurve keys={ac.keys?.Length ?? 0}>";
+
+                if (val is System.Collections.ICollection coll)
+                {
+                    int count = coll.Count;
+                    string elemType = "?";
+                    foreach (var e in coll) { if (e != null) { elemType = e.GetType().Name; break; } }
+                    return $"<{val.GetType().Name} count={count} elemType={elemType}>";
+                }
+
+                if (val is UnityEngine.Object uo)
+                    return $"<{val.GetType().Name} name='{uo.name}'>";
+
+                Type t = val.GetType();
+                if (t.IsPrimitive || t == typeof(string) || t.IsEnum)
+                    return val.ToString();
+
+                // Struct or other reference — show type + ToString
+                return $"<{t.Name}> {val.ToString()}";
+            }
+            catch (Exception ex)
+            {
+                return $"<read-failed: {ex.Message}>";
+            }
+        }
+
+        /// <summary>
+        /// Dump every WaterType ScriptableObject reachable from
+        /// waterSettings.lakeTypes. Each WaterType controls per-type render
+        /// properties (color, transparency, riverEndPoint flag, etc.) and
+        /// may also expose lake/pond gen knobs we don't currently see.
+        /// </summary>
+        private static void DumpWaterTypes(TerrainGenerator tg, Type tgType)
+        {
+            try
+            {
+                var wsField = WalkUpForField(tgType, "waterSettings");
+                if (wsField == null) return;
+                object ws = wsField.GetValue(tg);
+                if (ws == null) return;
+
+                var ltField = WalkUpForField(ws.GetType(), "lakeTypes");
+                if (ltField == null)
+                {
+                    RiversRestoredMod.Log.Msg(
+                        "[RR][WaterDump] waterSettings.lakeTypes: <field not found>");
+                    return;
+                }
+                if (!(ltField.GetValue(ws) is System.Collections.IEnumerable lakeTypes))
+                {
+                    RiversRestoredMod.Log.Msg(
+                        "[RR][WaterDump] waterSettings.lakeTypes: <not enumerable>");
+                    return;
+                }
+
+                int idx = 0;
+                foreach (var wt in lakeTypes)
+                {
+                    if (wt == null)
+                    {
+                        RiversRestoredMod.Log.Msg(
+                            $"[RR][WaterDump] lakeTypes[{idx}]: <null>");
+                        idx++;
+                        continue;
+                    }
+                    string label = $"lakeTypes[{idx}]";
+                    if (wt is UnityEngine.Object uo)
+                        label += $" '{uo.name}'";
+                    DumpSettingsObject(label, wt, wt.GetType());
+                    idx++;
+                }
+                if (idx == 0)
+                    RiversRestoredMod.Log.Msg(
+                        "[RR][WaterDump] lakeTypes: <empty>");
+            }
+            catch (Exception ex)
+            {
+                RiversRestoredMod.Log.Error(
+                    $"[RR][WaterDump] DumpWaterTypes failed: {ex}");
             }
         }
 
