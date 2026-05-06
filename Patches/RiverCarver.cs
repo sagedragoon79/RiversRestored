@@ -32,6 +32,17 @@ namespace RiversRestored.Patches
         private static bool _dumpedLayerShape = false;
         private static bool _dumpedTerrainData = false;
 
+        // Cached terrain API references. Resolved once via FindObjectOfType
+        // and reused across every CarveAllRivers call until ResetGuard()
+        // clears them (e.g., when reloading a different save). Pre-cache,
+        // CarveAllRivers ran two scene-wide FindObjectOfType lookups every
+        // frame until _carved=true — on slow loads (60s+) that's thousands
+        // of redundant scans burning CPU during the load screen.
+        private static Type? _cachedTerrainManagerType;
+        private static Type? _cachedTerrain2Type;
+        private static UnityEngine.Object? _cachedTerrainManagerInstance;
+        private static UnityEngine.Object? _cachedTerrain2Instance;
+
         public static void ResetGuard()
         {
             _carved = false;
@@ -39,6 +50,10 @@ namespace RiversRestored.Patches
             _dumpedAPIShape = false;
             _dumpedLayerShape = false;
             _dumpedTerrainData = false;
+            // Drop cached scene references — a new load will have fresh
+            // terrain instances even though the Type lookups stay valid.
+            _cachedTerrainManagerInstance = null;
+            _cachedTerrain2Instance = null;
         }
 
         /// <summary>
@@ -236,34 +251,59 @@ namespace RiversRestored.Patches
             {
                 if (!RiversRestoredMod.RiversEnabled.Value) return;
                 if (_carved) return;
+                // CRITICAL: this check is NOT a duplicate of OnUpdate's gate.
+                // CarveAllRivers is also called directly from
+                // RiverSettingsPatch.LateCarvePostfix — a Harmony postfix that
+                // fires on FF's late-stage terrain methods. Those same methods
+                // run during save reload as part of FF's terrain reconstruction,
+                // so without this guard the carver runs during reload and
+                // overwrites/breaks the saved water state (lakes appear missing
+                // after reload because our carve writes cascade through the
+                // load pipeline).
                 if (RiverSettingsPatch.IsLoadingSavedMap(__instance)) return;
-                // Save-load belt-and-suspenders: IsLoadingSavedMap reads
-                // _generationData.useSavedMap and returns false when gd is
-                // still null in the early load phase, which used to leak
-                // a few wasted carve attempts (see "_generationData null"
-                // spam in older logs). Skip if persistence has marked
-                // a restore in flight.
+                // Save-load belt-and-suspenders: skip if persistence has
+                // marked a restore in flight, so the carver doesn't fight
+                // the persistence layer's spawn-from-disk path.
                 if (RiverPersistence.RestorePending) return;
                 if (RiverPersistence.RestoredThisLoad) return;
 
                 // ── 1) Locate FF's terrain API instances ─────────────────
                 // TerrainManagerBase: handles per-cell height read/write
                 // Terrain2:           handles mesh rebuild after height changes
-                var tmType = AccessTools.TypeByName("TerrainManagerBase");
-                var terrain2Type = AccessTools.TypeByName("LibTerrain2.Terrain2")
-                                   ?? AccessTools.TypeByName("Terrain2");
-                if (tmType == null || terrain2Type == null)
+                //
+                // Cached on first successful resolution and reused. Pre-cache,
+                // FindObjectOfType ran every frame during the load window
+                // (potentially seconds × 60fps = thousands of scans).
+                if (_cachedTerrainManagerType == null)
+                    _cachedTerrainManagerType = AccessTools.TypeByName("TerrainManagerBase");
+                if (_cachedTerrain2Type == null)
+                    _cachedTerrain2Type = AccessTools.TypeByName("LibTerrain2.Terrain2")
+                                          ?? AccessTools.TypeByName("Terrain2");
+
+                if (_cachedTerrainManagerType == null || _cachedTerrain2Type == null)
                 {
-                    Log($"Type not found: TerrainManagerBase={tmType != null} Terrain2={terrain2Type != null}");
+                    Log($"Type not found: TerrainManagerBase={_cachedTerrainManagerType != null} Terrain2={_cachedTerrain2Type != null}");
                     return;
                 }
-                var tm = UnityEngine.Object.FindObjectOfType(tmType);
-                var t2 = UnityEngine.Object.FindObjectOfType(terrain2Type);
+
+                if (_cachedTerrainManagerInstance == null)
+                    _cachedTerrainManagerInstance = UnityEngine.Object.FindObjectOfType(_cachedTerrainManagerType);
+                if (_cachedTerrain2Instance == null)
+                    _cachedTerrain2Instance = UnityEngine.Object.FindObjectOfType(_cachedTerrain2Type);
+
+                var tm = _cachedTerrainManagerInstance;
+                var t2 = _cachedTerrain2Instance;
                 if (tm == null || t2 == null)
                 {
-                    // Not yet alive — caller (OnUpdate) will retry
+                    // Not yet alive — caller (OnUpdate) will retry. Don't
+                    // cache nulls; loop back through FindObjectOfType next frame.
                     return;
                 }
+                // Local aliases for the cached Type refs (downstream code reads
+                // these freely; keeping the names matches the pre-cache version
+                // so no other edits in this method are required).
+                var tmType = _cachedTerrainManagerType;
+                var terrain2Type = _cachedTerrain2Type;
 
                 if (!_dumpedAPIShape)
                 {
