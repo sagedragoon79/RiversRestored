@@ -86,99 +86,141 @@ namespace RiversRestored
 
         private static void RegisterEntries()
         {
-            // Hides everything when the master toggle is off.
+            // Hides downstream rows when master toggle is off.
             Func<bool> on = () => RiversRestoredMod.RiversEnabled.Value;
+            // Granular sliders only visible when both master is on AND user
+            // has opted into granular mode (matches MelonPreferences IsHidden
+            // behaviour from Plugin.cs::ApplyGranularVisibility).
+            Func<bool> onGranular = () =>
+                RiversRestoredMod.RiversEnabled.Value
+                && (RiversRestoredMod.GranularSettings?.Value ?? false);
 
-            // === Master ===
+            // === Master === — basic-tier choices, always visible (or gated
+            // only by master toggle). Order field controls KC's per-row sort.
             Reg("Master", RiversRestoredMod.RiversEnabled,
-                NewMeta("Rivers Enabled", "Master toggle. Off = vanilla (no rivers)."));
+                NewMeta("Rivers Enabled",
+                    "Master toggle. Off = vanilla (no rivers).",
+                    order: 0));
+            Reg("Master", RiversRestoredMod.RiverPreset,
+                NewMeta("River Preset (matches map biome)",
+                    "Pre-tuned bundle of river settings matched to FF's biome names. " +
+                    "When set to anything except Custom, the preset's values override " +
+                    "the granular sliders. Pick the option that matches your map's biome " +
+                    "for sensible defaults.",
+                    order: 10, visibleWhen: on));
+            Reg("Master", RiversRestoredMod.GranularSettings,
+                NewMeta("Show Granular Settings (Advanced)",
+                    "When ON, the per-slider river-shape controls become visible below. " +
+                    "They only take effect when River Preset is set to Custom.",
+                    order: 20, visibleWhen: on));
             Reg("Master", RiversRestoredMod.EnableRibbonAnimation,
                 NewMeta("Flowing-Water Animation",
-                    "On = animated ribbon flow. Off = static green water (cheaper, lakes-style)",
-                    visibleWhen: on));
+                    "On = animated ribbon flow. Off = static water surface only " +
+                    "(cheaper, lakes-style; saves CPU/GPU on river-heavy maps).",
+                    order: 30, visibleWhen: on));
+            Reg("Master", RiversRestoredMod.RiverPreferLakeWaterType,
+                NewMeta("Prefer Lake (Blue) Water for Rivers",
+                    "On (default) = rivers use Lake-type water (clear blue). " +
+                    "Off = rivers use whatever water type the map assigns first (often Pond — green/murky).",
+                    order: 40, visibleWhen: on));
 
-            // === Density ===
+            // === Flow Direction === — v1.3.0 directional bias.
+            Reg("Flow Direction", RiversRestoredMod.RiverFlowBias,
+                NewMeta("River Flow Direction Bias",
+                    "Tilt the heightmap before river-path generation so rivers " +
+                    "statistically flow from a chosen high corner/edge to a chosen low one. " +
+                    "None = pure seed-driven (vanilla behaviour).",
+                    order: 0, visibleWhen: on));
+            Reg("Flow Direction", RiversRestoredMod.RiverFlowBiasStrength,
+                NewMeta("Flow Bias Strength", min: 0f, max: 1f,
+                    tooltip: "How strongly to tilt the heightmap. " +
+                    "0.3 = subtle, 0.4 = balanced default, 0.5 = strong, 0.7+ = visibly tilted. " +
+                    "Has no effect when Direction Bias is None.",
+                    order: 10, visibleWhen: on));
+
+            // === Density === — granular only.
             Reg("Density", RiversRestoredMod.NumRivers,
                 NewMeta("Number of Rivers", min: 0, max: 12,
                     tooltip: "Generator targets this count; final number depends on seed feasibility",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Density", RiversRestoredMod.MinPoints,
                 NewMeta("Minimum River Length", min: 1, max: 50,
                     tooltip: "Min control points for a river to be accepted",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
 
-            // === Shape — Width / Depth ===
+            // === Shape — Width / Depth === — granular only.
             Reg("Shape — Width / Depth", RiversRestoredMod.MinWidth,
                 NewMeta("Min Width (cells)", min: 0, max: 30,
-                    tooltip: "0 = leave vanilla", visibleWhen: on));
+                    tooltip: "0 = leave vanilla", visibleWhen: onGranular));
             Reg("Shape — Width / Depth", RiversRestoredMod.MaxWidth,
                 NewMeta("Max Width (cells)", min: 0, max: 60,
-                    tooltip: "0 = leave vanilla", visibleWhen: on));
+                    tooltip: "0 = leave vanilla", visibleWhen: onGranular));
             Reg("Shape — Width / Depth", RiversRestoredMod.MinDepth,
                 NewMeta("Min Depth (m)", min: -1f, max: 5f,
-                    tooltip: "-1 = leave vanilla", visibleWhen: on));
+                    tooltip: "-1 = leave vanilla", visibleWhen: onGranular));
             Reg("Shape — Width / Depth", RiversRestoredMod.MaxDepth,
                 NewMeta("Max Depth (m)", min: -1f, max: 10f,
-                    tooltip: "-1 = leave vanilla", visibleWhen: on));
+                    tooltip: "-1 = leave vanilla", visibleWhen: onGranular));
 
-            // === Carve Shape ===
+            // === Carve Shape === — granular only.
             Reg("Carve Shape", RiversRestoredMod.RiverInnerRadius,
                 NewMeta("Trench Inner Radius (cells)", min: 1, max: 10,
                     tooltip: "Cells within this distance of centerline are carved to trench depth",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Carve Shape", RiversRestoredMod.RiverOuterRadius,
                 NewMeta("Bank Outer Radius (cells)", min: 2, max: 20,
                     tooltip: "Where banks blend back to original terrain",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Carve Shape", RiversRestoredMod.RiverTrenchDepth,
                 NewMeta("Trench Depth (m)", min: 0.1f, max: 5f,
                     tooltip: "How deep below water surface the trench is carved",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Carve Shape", RiversRestoredMod.RiverSmoothPasses,
                 NewMeta("Bank Smooth Passes", min: 0, max: 12,
                     tooltip: "0 = raw carve, 4 = good default, 8 = very gentle",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Carve Shape", RiversRestoredMod.RiverJitterAmplitude,
                 NewMeta("Meander Amplitude (m)", min: 0f, max: 5f,
                     tooltip: "0 = straight, larger = more meandering",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Carve Shape", RiversRestoredMod.RiverJitterFrequency,
                 NewMeta("Meander Frequency", min: 0f, max: 3f,
                     tooltip: "Wave oscillations per Voronoi segment",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
 
-            // === Water Plane / Fishing ===
+            // === Water Plane / Fishing === — granular only.
             Reg("Water Plane / Fishing", RiversRestoredMod.RiverRegisterAsWaterArea,
                 NewMeta("Register as Water Area",
                     "Treat rivers as water areas (lakes-style) — enables fishing and stable persistence",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Water Plane / Fishing", RiversRestoredMod.RiverBlobRadius,
                 NewMeta("Disc Stamp Radius (cells)", min: 1, max: 10,
                     tooltip: "Disc-stamp radius for water-area polygon merging",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Water Plane / Fishing", RiversRestoredMod.RiverBlobStride,
                 NewMeta("Disc Stamp Stride (cells)", min: 1, max: 10,
                     tooltip: "Spacing between disc stamps along the path",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Water Plane / Fishing", RiversRestoredMod.RiverFishingAreaMultiplier,
                 NewMeta("Fishing Area Multiplier", min: 1, max: 8,
                     tooltip: "1 = vanilla density (sparse), 4 = playable density",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
 
-            // === Generator Gating ===
+            // === Generator Gating === — granular only.
             Reg("Generator Gating", RiversRestoredMod.MarkWaterTypesAsRiverEnd,
                 NewMeta("Mark Water as River-End",
                     "THE gate — without this, no river ever validates regardless of count",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
             Reg("Generator Gating", RiversRestoredMod.ForceCoastlineTerrain,
                 NewMeta("Force Coastline Terrain",
                     "Diagnostic: forces Coastline biome (gives ocean as guaranteed river endpoint)",
-                    visibleWhen: on));
+                    visibleWhen: onGranular));
 
-            // === Diagnostics ===
+            // === Diagnostics === — always visible (no granular gate).
             Reg("Diagnostics", RiversRestoredMod.VerboseDiagnostics,
                 NewMeta("Verbose Diagnostics",
-                    "Per-WaterArea state on save, per-stage waterAreas counts during gen. Noisy in normal play."));
+                    "Per-WaterArea state on save, per-stage waterAreas counts during gen. " +
+                    "Noisy in normal play."));
         }
     }
 }

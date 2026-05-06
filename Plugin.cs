@@ -3,7 +3,7 @@ using HarmonyLib;
 using MelonLoader;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Rivers Restored v1.2.1
+//  Rivers Restored v1.3.0
 //
 //  Discovery: Farthest Frontier ships with a COMPLETE river generation system
 //  that simply isn't active on shipped maps. The Voronoi-based path generator,
@@ -23,11 +23,39 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.2.1", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.3.0", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
 {
+    /// <summary>Directional bias for river drainage paths. When set to
+    /// anything except <see cref="None"/>, the heightmap is subtly tilted
+    /// at gen time before Stage 38's Voronoi pathfinder runs, so rivers
+    /// statistically prefer flowing from the named "high" corner toward
+    /// the named "low" corner. Strength is controlled by
+    /// <see cref="RiversRestoredMod.RiverFlowBiasStrength"/>.</summary>
+    public enum RiverFlowBiasMode
+    {
+        /// <summary>No bias — pure Voronoi seed-driven directions (default).</summary>
+        None,
+        /// <summary>High in NE, low in SW. Rivers flow from northeast to southwest.</summary>
+        NE_to_SW,
+        /// <summary>High in NW, low in SE. Rivers flow from northwest to southeast.</summary>
+        NW_to_SE,
+        /// <summary>High in SW, low in NE. Rivers flow from southwest to northeast.</summary>
+        SW_to_NE,
+        /// <summary>High in SE, low in NW. Rivers flow from southeast to northwest.</summary>
+        SE_to_NW,
+        /// <summary>High in N, low in S. Rivers flow from north to south.</summary>
+        N_to_S,
+        /// <summary>High in S, low in N. Rivers flow from south to north.</summary>
+        S_to_N,
+        /// <summary>High in E, low in W. Rivers flow from east to west.</summary>
+        E_to_W,
+        /// <summary>High in W, low in E. Rivers flow from west to east.</summary>
+        W_to_E,
+    }
+
     /// <summary>Preset bundles for river generation, named to match the
     /// map biomes available in Farthest Frontier's New Game UI. Selected via
     /// <see cref="RiversRestoredMod.RiverPreset"/> in the cfg / in-game
@@ -85,6 +113,21 @@ namespace RiversRestored
         /// edits still work either way. Toggling this re-applies hidden
         /// state on every entry without restart.</summary>
         public static MelonPreferences_Entry<bool> GranularSettings { get; private set; } = null!;
+
+        // ── River flow direction bias ──────────────────────────────────────
+        /// <summary>Tilt the heightmap before river-path generation so
+        /// rivers statistically flow from a chosen high corner/edge to a
+        /// chosen low one. Lets you guarantee scenic edge-to-edge rivers
+        /// in a desired direction without hand-painting paths.
+        /// FFModSettingsManager renders this as a dropdown.</summary>
+        public static MelonPreferences_Entry<RiverFlowBiasMode> RiverFlowBias { get; private set; } = null!;
+
+        /// <summary>How strongly to tilt the heightmap when
+        /// <see cref="RiverFlowBias"/> is non-None. Range 0.0–1.0. 0.3 is
+        /// a subtle hint (some rivers will still go their own way), 0.5
+        /// is reliable (most rivers follow the bias), 1.0 is dramatic
+        /// (visible map tilt, all rivers follow). Default 0.4.</summary>
+        public static MelonPreferences_Entry<float> RiverFlowBiasStrength { get; private set; } = null!;
 
         // ── Path / count ────────────────────────────────────────────────────
         /// <summary>Number of rivers the generator will attempt to produce
@@ -219,6 +262,8 @@ namespace RiversRestored
         {
             public int NumRivers;
             public int MinPoints;
+            public int MinWidth;     // ribbon mesh min width (cells), 0 = vanilla 2-8
+            public int MaxWidth;     // ribbon mesh max width (cells), 0 = vanilla 2-8
             public int InnerRadius;
             public int OuterRadius;
             public int BlobRadius;
@@ -235,42 +280,52 @@ namespace RiversRestored
         private static readonly System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues> Presets
             = new System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues>
         {
-            // IdyllicValley is the recommended default — mirrors v1.2.1
+            // IdyllicValley is the recommended default — mirrors v1.3.0
             // calibrated baseline. Balanced rolling terrain with clean banks.
             [RiverPresetMode.IdyllicValley] = new RiverPresetValues
             {
                 NumRivers = 4, MinPoints = 15,
+                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
                 InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 1.8f, SmoothPasses = 6,
                 JitterAmplitude = 1.5f, JitterFrequency = 0.6f,
                 FishingAreaMultiplier = 4,
             },
-            // LowlandLakes: flat with ponds. Aggressive: short paths, more
-            // attempts, narrow shallow streams.
+            // LowlandLakes: flat with ponds. Aggressive count + short paths,
+            // but polygon footprint matched to IdyllicValley so the merged
+            // shape clears FF's Lake-area threshold (otherwise reload tags
+            // it as Pond and water can fail to render).
             [RiverPresetMode.LowlandLakes] = new RiverPresetValues
             {
                 NumRivers = 8, MinPoints = 6,
-                InnerRadius = 4, OuterRadius = 6, BlobRadius = 4, BlobStride = 2,
+                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
+                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 1.2f, SmoothPasses = 8,
                 JitterAmplitude = 0.8f, JitterFrequency = 0.4f,
                 FishingAreaMultiplier = 5,
             },
-            // AridHighlands: high but dry. Fewer rivers, narrower channels,
-            // deeper trenches to read as rocky.
+            // AridHighlands: high but dry. Fewer rivers, deeper trenches to
+            // read as rocky. Polygon footprint matched to IdyllicValley so
+            // the merged shape clears FF's Lake-area threshold.
             [RiverPresetMode.AridHighlands] = new RiverPresetValues
             {
                 NumRivers = 3, MinPoints = 18,
-                InnerRadius = 5, OuterRadius = 10, BlobRadius = 5, BlobStride = 3,
+                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
+                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 2.5f, SmoothPasses = 5,
                 JitterAmplitude = 1.0f, JitterFrequency = 0.5f,
                 FishingAreaMultiplier = 3,
             },
-            // Plains: open semi-flat. Moderate river count and width;
-            // less aggressive than LowlandLakes because there's slight gradient.
+            // Plains: open semi-flat. Moderate river count; polygon footprint
+            // matched to IdyllicValley so the merged shape clears FF's
+            // Lake-area threshold (Plains has slight gradient — leaving the
+            // pre-bump narrow geometry caused reload-time Pond classification
+            // and missing water).
             [RiverPresetMode.Plains] = new RiverPresetValues
             {
                 NumRivers = 5, MinPoints = 10,
-                InnerRadius = 5, OuterRadius = 8, BlobRadius = 5, BlobStride = 2,
+                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
+                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 1.5f, SmoothPasses = 7,
                 JitterAmplitude = 1.2f, JitterFrequency = 0.5f,
                 FishingAreaMultiplier = 4,
@@ -280,6 +335,7 @@ namespace RiversRestored
             [RiverPresetMode.AlpineValleys] = new RiverPresetValues
             {
                 NumRivers = 4, MinPoints = 20,
+                MinWidth = 10, MaxWidth = 14,   // big rivers in 12-cell polygon
                 InnerRadius = 6, OuterRadius = 12, BlobRadius = 6, BlobStride = 3,
                 TrenchDepth = 3.0f, SmoothPasses = 4,
                 JitterAmplitude = 2.5f, JitterFrequency = 0.6f,
@@ -304,6 +360,8 @@ namespace RiversRestored
             {
                 NumRivers = NumRivers?.Value ?? 4,
                 MinPoints = MinPoints?.Value > 0 ? MinPoints.Value : 15,
+                MinWidth = MinWidth?.Value ?? 0,    // 0 = vanilla 2-8
+                MaxWidth = MaxWidth?.Value ?? 0,    // 0 = vanilla 2-8
                 InnerRadius = RiverInnerRadius?.Value ?? 6,
                 OuterRadius = RiverOuterRadius?.Value ?? 10,
                 BlobRadius = RiverBlobRadius?.Value ?? 6,
@@ -355,6 +413,34 @@ namespace RiversRestored
                              "presets above are tuned for clean blending; recommended only for " +
                              "users who understand the trench/water/bank interaction. " +
                              "Granular sliders only take effect when River Preset is set to Custom.");
+
+            RiverFlowBias = cat.CreateEntry("RiverFlowBias", RiverFlowBiasMode.None,
+                display_name: "River Flow Direction Bias",
+                description: "Tilt the heightmap before river-path generation so rivers " +
+                             "statistically flow from a chosen high corner/edge to a chosen " +
+                             "low one. Useful for guaranteeing scenic edge-to-edge rivers " +
+                             "in a desired direction:\n" +
+                             "  None      — pure seed-driven directions (default, no bias)\n" +
+                             "  NE_to_SW  — high in NE, low in SW (rivers flow southwest)\n" +
+                             "  NW_to_SE  — high in NW, low in SE\n" +
+                             "  SW_to_NE  — high in SW, low in NE\n" +
+                             "  SE_to_NW  — high in SE, low in NW\n" +
+                             "  N_to_S, S_to_N, E_to_W, W_to_E  — cardinal directions\n" +
+                             "Bias is statistical — about 70-90% of rivers follow the chosen " +
+                             "direction depending on Strength. Lakes and other water bodies " +
+                             "are also nudged toward the low end (realistic — water pools " +
+                             "where it's lowest). Affects new map gens only; existing saves " +
+                             "unaffected.");
+
+            RiverFlowBiasStrength = cat.CreateEntry("RiverFlowBiasStrength", 0.4f,
+                display_name: "Flow Bias Strength",
+                description: "How strongly to tilt the heightmap when River Flow Direction " +
+                             "Bias is set. Range 0.0–1.0:\n" +
+                             "  0.3  — subtle (some rivers may still go their own way)\n" +
+                             "  0.4  — balanced default; reliable for most maps\n" +
+                             "  0.5  — strong (most rivers follow the bias)\n" +
+                             "  0.7+ — visible map tilt; can look unnatural in flat biomes\n" +
+                             "Has no effect when River Flow Direction Bias is None.");
 
             EnableRibbonAnimation = cat.CreateEntry("EnableRibbonAnimation", true,
                 display_name: "Enable Flowing-Water Animation",
@@ -570,7 +656,7 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.2.1 loaded. NumRivers={NumRivers.Value}, " +
+                Log.Msg($"[RR] Rivers Restored 1.3.0 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.

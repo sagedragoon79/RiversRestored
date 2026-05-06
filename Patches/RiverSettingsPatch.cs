@@ -3,6 +3,7 @@ using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using TerrainGen;
+using UnityEngine;
 
 namespace RiversRestored.Patches
 {
@@ -195,6 +196,108 @@ namespace RiversRestored.Patches
             }
         }
 
+        /// <summary>Tilt <c>_generationData.heightNoise</c> along a chosen
+        /// axis so the Voronoi river-pathfinder (Stage 38) statistically
+        /// prefers drainage paths in that direction. Bias is computed as a
+        /// linear gradient between the "high" and "low" extremes of the
+        /// chosen direction, scaled by <see cref="RiversRestoredMod.RiverFlowBiasStrength"/>.
+        ///
+        /// Subtle by design: 0.4 strength shifts heightNoise by up to ~20%
+        /// of map height across the map. Voronoi reads the modified
+        /// heightmap and finds drainage along the gradient. Lakes will
+        /// also tend to cluster toward the low end (water pools low).
+        ///
+        /// Has to run BEFORE Stage 38 invokes its pathfinder. Caller is
+        /// <see cref="InjectStage38Postfix"/> right before <c>_miStage38.Invoke</c>.
+        ///
+        /// No-op when RiverFlowBias is None or strength is 0.</summary>
+        private static void ApplyRiverFlowBias(TerrainGenerator tg)
+        {
+            try
+            {
+                var mode = RiversRestoredMod.RiverFlowBias?.Value ?? RiverFlowBiasMode.None;
+                if (mode == RiverFlowBiasMode.None) return;
+                float strength = Mathf.Clamp01(RiversRestoredMod.RiverFlowBiasStrength?.Value ?? 0f);
+                if (strength <= 0.001f) return;
+
+                var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd == null) { RiversRestoredMod.Log.Warning("[RR][FlowBias] _generationData null — skipping bias."); return; }
+                var hnField = gd.GetType().GetField("heightNoise",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var heightNoise = hnField?.GetValue(gd) as float[,];
+                if (heightNoise == null) { RiversRestoredMod.Log.Warning("[RR][FlowBias] heightNoise null — skipping."); return; }
+
+                int w = heightNoise.GetLength(0);
+                int h = heightNoise.GetLength(1);
+                if (w <= 0 || h <= 0) return;
+
+                // Bias amplitude: 20% of normalized height range at strength
+                // 1.0. Linear scale with strength. Empirically this is enough
+                // to override most local terrain features without making the
+                // tilt visually obvious in screenshots.
+                float maxBias = 0.20f * strength;
+
+                // For each direction mode, build a "tilt factor" t(x, z) in
+                // [0, 1] where t=0 at the LOW corner/edge and t=1 at the HIGH.
+                // Then bias = (t - 0.5) * 2 * maxBias  → range [-maxBias, +maxBias].
+                // Add bias to existing heightNoise[x, z] in-place.
+                //
+                // FF's heightmap-to-screen mapping (verified empirically by
+                // testing N_to_S in-game and observing ribbon flow direction):
+                //   X axis: heightmap x=0 corresponds to screen-east,
+                //           x=max corresponds to screen-west. INVERTED.
+                //   Z axis: heightmap z=0 corresponds to screen-south,
+                //           z=max corresponds to screen-north. NOT inverted.
+                //
+                // We define fx and fz so that fx=1 maps to screen-east and
+                // fz=1 maps to screen-north. Given the X inversion, that
+                // means fx=1 when heightmap x=0. Z is naturally aligned, so
+                // fz=1 when heightmap z=max.
+                //
+                // Earlier "both axes inverted" guess was based on Pangu's
+                // preview thumbnail flow direction, which apparently mirrors
+                // Z relative to the in-game render. In-game animation is
+                // the authoritative reference.
+                for (int x = 0; x < w; x++)
+                {
+                    for (int z = 0; z < h; z++)
+                    {
+                        float fx = 1f - (float)x / (w - 1);   // fx=1 → screen east (x inverted)
+                        float fz = (float)z / (h - 1);        // fz=1 → screen north (z natural)
+                        float t;
+                        switch (mode)
+                        {
+                            case RiverFlowBiasMode.NE_to_SW: t = (fx + fz) * 0.5f;       break;
+                            case RiverFlowBiasMode.SW_to_NE: t = 1f - (fx + fz) * 0.5f;  break;
+                            case RiverFlowBiasMode.NW_to_SE: t = ((1f - fx) + fz) * 0.5f; break;
+                            case RiverFlowBiasMode.SE_to_NW: t = 1f - ((1f - fx) + fz) * 0.5f; break;
+                            case RiverFlowBiasMode.N_to_S:   t = fz;       break;  // high N (z high), low S
+                            case RiverFlowBiasMode.S_to_N:   t = 1f - fz;  break;
+                            case RiverFlowBiasMode.E_to_W:   t = fx;       break;  // high E (x high), low W
+                            case RiverFlowBiasMode.W_to_E:   t = 1f - fx;  break;
+                            default: continue;
+                        }
+                        float bias = (t - 0.5f) * 2f * maxBias;
+                        // Add bias and clamp to [0, 1] so we don't underflow
+                        // the height representation.
+                        float v = heightNoise[x, z] + bias;
+                        if (v < 0f) v = 0f;
+                        else if (v > 1f) v = 1f;
+                        heightNoise[x, z] = v;
+                    }
+                }
+
+                RiversRestoredMod.Log.Msg(
+                    $"[RR][FlowBias] Applied {mode} bias to heightNoise " +
+                    $"({w}x{h}, strength={strength:F2}, maxBias={maxBias:F3}).");
+            }
+            catch (Exception ex)
+            {
+                RiversRestoredMod.Log.Warning($"[RR][FlowBias] failed: {ex.Message}");
+            }
+        }
+
         /// <summary>Diagnostic: dump current waterAreas.Count + how many
         /// of our tracked river bounds are still present in the list.
         /// Reveals which gen stage strips our additions — the stage where
@@ -301,6 +404,13 @@ namespace RiversRestored.Patches
             {
                 RiversRestoredMod.Log.Msg(
                     "[RR] >>> Injecting Stage 38 (RiverPaths) after Stage 37 (PreWater)…");
+                // ── Apply directional flow bias to heightmap (if cfg set) ──
+                // This tilts _generationData.heightNoise so the Voronoi
+                // pathfinder finds drainage paths preferentially in the
+                // chosen direction. Subtle by default (0.4 strength). Has
+                // to run BEFORE Stage 38 invokes its pathfinder.
+                ApplyRiverFlowBias(__instance);
+
                 _miStage38.Invoke(__instance, null);
                 RiversRestoredMod.Log.Msg(
                     "[RR] <<< Stage 38 injection completed without exception.");
@@ -609,17 +719,15 @@ namespace RiversRestored.Patches
                 float curMinDepth = (float)rsType.GetField("minDepth").GetValue(rsBox);
                 float curMaxDepth = (float)rsType.GetField("maxDepth").GetValue(rsBox);
 
-                // Compute what we WANT — preset values for NumRivers / MinPoints,
-                // user's individual cfg for the legacy width/depth settings
-                // (those aren't in our preset table since they affect ribbon
-                // rendering, not the carved trench geometry).
+                // Compute what we WANT — preset values for NumRivers / MinPoints
+                // / MinWidth / MaxWidth (per-biome ribbon width). Depth fields
+                // aren't in the preset table since they're FF's vanilla legacy
+                // controls; we keep individual cfg behavior for those.
                 var effective = RiversRestoredMod.GetEffectiveValues();
                 int wantNumRivers = effective.NumRivers;
                 int wantMinPoints = effective.MinPoints > 0 ? effective.MinPoints : curMinPoints;
-                int wantMinWidth = RiversRestoredMod.MinWidth.Value > 0
-                    ? RiversRestoredMod.MinWidth.Value : curMinWidth;
-                int wantMaxWidth = RiversRestoredMod.MaxWidth.Value > 0
-                    ? RiversRestoredMod.MaxWidth.Value : curMaxWidth;
+                int wantMinWidth = effective.MinWidth > 0 ? effective.MinWidth : curMinWidth;
+                int wantMaxWidth = effective.MaxWidth > 0 ? effective.MaxWidth : curMaxWidth;
                 float wantMinDepth = RiversRestoredMod.MinDepth.Value >= 0f
                     ? RiversRestoredMod.MinDepth.Value : curMinDepth;
                 float wantMaxDepth = RiversRestoredMod.MaxDepth.Value >= 0f
