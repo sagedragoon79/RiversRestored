@@ -265,6 +265,17 @@ namespace RiversRestored
         /// blue/clear water everywhere.</summary>
         public static MelonPreferences_Entry<bool>? PondUseLakeMaterial { get; private set; }
 
+        /// <summary>When true, RR renders a top-down preview image of each
+        /// generated map (heightmap as grayscale relief + water/rivers as
+        /// blue overlay) and writes it as a PNG to
+        /// <c>UserData/RiversRestored/Previews/&lt;seed&gt;_&lt;timestamp&gt;.png</c>.
+        /// Stage 2 of the in-game previewer feature — at this stage, the
+        /// preview is verified by the user opening the PNG file directly.
+        /// Default OFF — opt-in until the rendering is dialed in. No
+        /// gameplay impact; image is generated post-Stage-60 and is purely
+        /// observational.</summary>
+        public static MelonPreferences_Entry<bool>? EnableMapPreviewRender { get; private set; }
+
         // ── Preset value table ─────────────────────────────────────────────
         /// <summary>Bundle of preset values that override the granular cfg
         /// entries when <see cref="RiverPreset"/> is anything other than
@@ -686,17 +697,27 @@ namespace RiversRestored
                              "tinted muddy-green and has lower transparency. Leave " +
                              "ON unless you specifically want green murky rivers.");
 
-            PondUseLakeMaterial = cat.CreateEntry("PondUseLakeMaterial", false,
+            PondUseLakeMaterial = cat.CreateEntry("PondUseLakeMaterial", true,
                 display_name: "Force Pond Water to Render as Lake (Blue)",
-                description: "When ON: every Pond in the game session uses the " +
-                             "blue Lake water material instead of the green Pond one. " +
-                             "Pond classification is unchanged (small/marshy areas " +
-                             "still classify as Pond), only the visual material " +
-                             "swaps. Affects ALL ponds on every map you play, not " +
-                             "just RR-tracked water. Useful if you want consistent " +
-                             "blue water everywhere and don't care about green/murky " +
-                             "pond visual variety. Default OFF (preserves vanilla " +
-                             "appearance).");
+                description: "When ON (default): every Pond in the game session uses " +
+                             "the blue Lake water material instead of the green Pond " +
+                             "one. Pond classification is unchanged (small/marshy areas " +
+                             "still classify as Pond), only the visual material swaps. " +
+                             "Affects ALL ponds on every map. Recommended ON because " +
+                             "it also fixes the save/reload WaterType-orphan bug — " +
+                             "orphaned water polygons fall back to Pond's material, " +
+                             "so with this swap they render blue instead of invisible. " +
+                             "Set OFF if you want vanilla pond visual variety and don't " +
+                             "care about save/reload water visibility.");
+
+            EnableMapPreviewRender = cat.CreateEntry("EnableMapPreviewRender", false,
+                display_name: "[Beta] Render Map Previews to PNG",
+                description: "When ON: after each map gen, RR writes a top-down " +
+                             "preview image of the heightmap + rivers + lakes to " +
+                             "UserData/RiversRestored/Previews/<seed>_<timestamp>.png. " +
+                             "Useful for verifying RR's gen output without launching " +
+                             "into a settlement. Stage 2 of the in-game previewer feature. " +
+                             "Default OFF — opt-in until rendering is dialed in.");
 
             NumRivers = cat.CreateEntry("NumRivers", 4,
                 display_name: "Number of Rivers",

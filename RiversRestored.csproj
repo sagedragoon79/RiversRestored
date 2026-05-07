@@ -45,6 +45,10 @@
       <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.TerrainModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
 
     <!-- Game assembly -->
     <Reference Include="Assembly-CSharp">

@@ -125,10 +125,18 @@ namespace RiversRestored
                     order: 40, visibleWhen: on));
             Reg("Master", RiversRestoredMod.PondUseLakeMaterial,
                 NewMeta("Force Pond Water to Render as Lake (Blue)",
-                    "ON = every pond on every map renders with blue Lake material " +
-                    "instead of green Pond. Pond classification unchanged, only " +
-                    "the material swaps. Affects ALL ponds, not just rivers.",
+                    "ON (default) = every pond on every map renders with blue Lake " +
+                    "material instead of green Pond. Pond classification unchanged, " +
+                    "only the material swaps. Also fixes save/reload water visibility — " +
+                    "orphaned WaterTypes fall back to Pond's (now blue) material.",
                     order: 45, visibleWhen: on));
+            Reg("Master", RiversRestoredMod.EnableMapPreviewRender,
+                NewMeta("[Beta] Render Map Previews to PNG",
+                    "After each gen, RR writes a top-down preview PNG to " +
+                    "UserData/RiversRestored/Previews/. Useful for verifying " +
+                    "RR's gen output without launching into a settlement. " +
+                    "Stage 2 of the in-game previewer feature.",
+                    order: 50, visibleWhen: on));
 
             // === Flow Direction === — v1.3.0 directional bias.
             Reg("Flow Direction", RiversRestoredMod.RiverFlowBias,
