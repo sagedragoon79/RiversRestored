@@ -267,6 +267,23 @@ namespace RiversRestored.Patches
                 if (RiverPersistence.RestorePending) return;
                 if (RiverPersistence.RestoredThisLoad) return;
 
+                // ── 0) Fast pre-check: if rivers list isn't populated yet,
+                // bail silently. CarveAllRivers gets called every frame
+                // during gen until _carved flips true; without this gate,
+                // every frame ran the full reflection prologue + logged it,
+                // producing ~350 redundant prologue blocks per gen and
+                // freezing the main thread on log I/O. Defer all heavy
+                // work until rivers actually exist.
+                {
+                    var gdFieldFast = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
+                    var gdFast = gdFieldFast?.GetValue(__instance);
+                    if (gdFast == null) return;
+                    var riversFieldFast = gdFast.GetType().GetField("rivers",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    var riversFast = riversFieldFast?.GetValue(gdFast) as IList;
+                    if (riversFast == null || riversFast.Count == 0) return;
+                }
+
                 // ── 1) Locate FF's terrain API instances ─────────────────
                 // TerrainManagerBase: handles per-cell height read/write
                 // Terrain2:           handles mesh rebuild after height changes

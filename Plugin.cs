@@ -280,14 +280,28 @@ namespace RiversRestored
         private static readonly System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues> Presets
             = new System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetValues>
         {
-            // IdyllicValley is the recommended default — mirrors v1.3.0
-            // calibrated baseline. Balanced rolling terrain with clean banks.
+            // IdyllicValley is the recommended default — balanced rolling
+            // terrain with gentle banks and lake-style water rendering.
+            //
+            // Geometry rationale (from in-game tuning, see WATER_LEVERS.md):
+            //   • InnerRadius=4 / BlobRadius=4 — water polygon covers the
+            //     full carved trench, no exposed riverbed.
+            //   • OuterRadius=12 — 8-cell slope distance for gentle banks.
+            //   • TrenchDepth=3.0 — comfortably above vanilla's minDepth=2.5
+            //     "is this water?" floor. Below that, water can fail to
+            //     render in thin spots.
+            //   • MinWidth=8 / MaxWidth=12 — ribbon mesh wider than the
+            //     8-cell polygon, so the ribbon visually covers the green
+            //     Pond-classified water surface underneath. Trade-off:
+            //     gameplay zones (fishing, no-spawn) are bound by the
+            //     polygon, not the ribbon — narrower than visible river.
+            //   • SmoothPasses=8 — extra smoothing for the wider slope.
             [RiverPresetMode.IdyllicValley] = new RiverPresetValues
             {
                 NumRivers = 4, MinPoints = 15,
-                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
-                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
-                TrenchDepth = 1.8f, SmoothPasses = 6,
+                MinWidth = 8, MaxWidth = 12,    // ribbon hides the 8-cell water polygon
+                InnerRadius = 4, OuterRadius = 12, BlobRadius = 4, BlobStride = 3,
+                TrenchDepth = 3.0f, SmoothPasses = 8,
                 JitterAmplitude = 1.5f, JitterFrequency = 0.6f,
                 FishingAreaMultiplier = 4,
             },
@@ -316,19 +330,34 @@ namespace RiversRestored
                 JitterAmplitude = 1.0f, JitterFrequency = 0.5f,
                 FishingAreaMultiplier = 3,
             },
-            // Plains: open semi-flat. Moderate river count; polygon footprint
-            // matched to IdyllicValley so the merged shape clears FF's
-            // Lake-area threshold (Plains has slight gradient — leaving the
-            // pre-bump narrow geometry caused reload-time Pond classification
-            // and missing water).
+            // Plains: single long river bisecting the map. One dominant
+            // waterway, deep and meandering, edge-to-edge. Terrain is open
+            // so the river dominates the visual — no competing rivers.
+            //
+            // For the bisecting effect to actually trigger, the player MUST
+            // also set in MelonPreferences (these are not part of the
+            // preset bundle):
+            //   RiverFlowBias = "E_to_W" (or any cardinal/diagonal)
+            //   RiverFlowBiasStrength = 0.7  (strong tilt)
+            //   MarkWaterTypesAsRiverEnd = true  (lets map-edge ocean be a terminator)
+            //
+            // Trade-offs:
+            //   • NumRivers = 1 means no "failed-rivers-become-lakes" side
+            //     channel — you get one river plus only natural lakes.
+            //   • If validation fails (rare, but possible on hostile seeds),
+            //     the map gets zero rivers. Drop MinPoints to ~25 if you
+            //     see this happen.
+            //   • Wide deep trench + heavy meander + max fishing multiplier
+            //     intentionally make this single river feel like the
+            //     map's centerpiece feature.
             [RiverPresetMode.Plains] = new RiverPresetValues
             {
-                NumRivers = 5, MinPoints = 10,
-                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
-                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
-                TrenchDepth = 1.5f, SmoothPasses = 7,
-                JitterAmplitude = 1.2f, JitterFrequency = 0.5f,
-                FishingAreaMultiplier = 4,
+                NumRivers = 1, MinPoints = 35,         // single long river
+                MinWidth = 14, MaxWidth = 18,          // major-river ribbon
+                InnerRadius = 5, OuterRadius = 14, BlobRadius = 5, BlobStride = 3,
+                TrenchDepth = 4.0f, SmoothPasses = 10, // deep + very smooth banks
+                JitterAmplitude = 2.5f, JitterFrequency = 0.4f, // sweeping bends
+                FishingAreaMultiplier = 8,             // sole river is the food source
             },
             // AlpineValleys: mountains/valleys. Long deep alpine drainages
             // with wide gradual banks and strong meander.
