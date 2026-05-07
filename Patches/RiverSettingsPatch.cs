@@ -243,28 +243,29 @@ namespace RiversRestored.Patches
                 // Then bias = (t - 0.5) * 2 * maxBias  → range [-maxBias, +maxBias].
                 // Add bias to existing heightNoise[x, z] in-place.
                 //
-                // FF's heightmap-to-screen mapping (verified empirically by
-                // testing N_to_S in-game and observing ribbon flow direction):
+                // FF's heightmap-to-screen mapping (verified 2026-05-06 across
+                // four iterations of in-game bias testing):
                 //   X axis: heightmap x=0 corresponds to screen-east,
                 //           x=max corresponds to screen-west. INVERTED.
-                //   Z axis: heightmap z=0 corresponds to screen-south,
-                //           z=max corresponds to screen-north. NOT inverted.
+                //   Z axis: heightmap z=0 corresponds to screen-north,
+                //           z=max corresponds to screen-south. INVERTED.
                 //
-                // We define fx and fz so that fx=1 maps to screen-east and
-                // fz=1 maps to screen-north. Given the X inversion, that
-                // means fx=1 when heightmap x=0. Z is naturally aligned, so
-                // fz=1 when heightmap z=max.
+                // BOTH AXES ARE INVERTED relative to the heightmap array
+                // indexing. We confirmed this empirically: with both axes
+                // left natural, every directional mode produced behavior
+                // opposite to its name (e.g. NW_to_SE pooled water in the
+                // northern half). Inverting both axes brings observed
+                // behavior in line with the mode names.
                 //
-                // Earlier "both axes inverted" guess was based on Pangu's
-                // preview thumbnail flow direction, which apparently mirrors
-                // Z relative to the in-game render. In-game animation is
-                // the authoritative reference.
+                // We define fx and fz so that fx=1 maps to screen-east
+                // and fz=1 maps to screen-north — the convention the
+                // diagonal mode math below assumes.
                 for (int x = 0; x < w; x++)
                 {
                     for (int z = 0; z < h; z++)
                     {
                         float fx = 1f - (float)x / (w - 1);   // fx=1 → screen east (x inverted)
-                        float fz = (float)z / (h - 1);        // fz=1 → screen north (z natural)
+                        float fz = 1f - (float)z / (h - 1);   // fz=1 → screen north (z inverted)
                         float t;
                         switch (mode)
                         {

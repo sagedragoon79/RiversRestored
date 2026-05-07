@@ -1,8 +1,8 @@
 # Rivers Restored — Session Handoff
 
-**Last updated:** 2026-05-06
-**Current branch:** `main`
-**Current Steam-shipped DLL:** `bin/Release/net46/RiversRestored.dll` (143,872 bytes, 16:04)
+**Last updated:** 2026-05-06 (late session — bias axis investigation in flight)
+**Current branch:** `debug/idyllic-tune` (uncommitted bias-axis change)
+**Current Steam-shipped DLL:** `bin/Release/net46/RiversRestored.dll` (143,872 bytes, 16:04) — **unchanged**, safe
 
 For deep technical history of how the mod was originally built, see [HANDOFF.md](HANDOFF.md).
 For roadmap notes and known design decisions, see [V0_2_PLAN.md](V0_2_PLAN.md).
@@ -43,6 +43,48 @@ The code now has a fat warning comment. Don't make me regret it.
 
 ---
 
+## Late-session work (2026-05-06, post-perf-merge)
+
+### Capsule-stamp experiment — rolled back
+Tried capsule (rounded-end rectangle) river stamps in `RiverWaterAreaBuilder.cs`. Worked at gen, but on save/reload caused ribbon-lift + lake-touching-river → Pond reclassification. Reverted via `git checkout main -- Patches/RiverWaterAreaBuilder.cs`. Capsule code retained in file but not called.
+
+**Visual gotcha learned:** Yellow shoreline at gen-time is splat-paint-in-progress that resolves on reload via `ForceWaterPlaneRebuild`. **Post-reload is the canonical visual, not gen-time.** Don't tune off gen-time appearance. Also: river "blue water" celebrations during prior tuning were wrong — it's green Pond water hidden under a cosmetic ribbon mesh. Visual workaround, not a true classification fix.
+
+### Diagnostic dump + WATER_LEVERS doc (on `main`)
+- `RiverSettingsPatch.DumpWaterSettings` — one-shot reflection dump of every field on `waterSettings`/`riverSettings`/`baseSettings`/`mapSettings` and each `WaterType` in `lakeTypes`. Logs to `Latest.log` with `[RR][WaterDump]` prefix. Read-only, fires once per process.
+- `WATER_LEVERS.md` (475 lines) — Section 1 (currently exposed prefs) is complete. Sections 2-4 (vanilla fields RR reads/doesn't read, WaterType SO fields) await a fresh dump grep.
+
+### Preset tuning (committed on `debug/idyllic-tune`)
+| Preset | Rivers | Pts | Width | Trench | Smooth | Jitter | Fishing× |
+|--------|--------|-----|-------|--------|--------|--------|----------|
+| IdyllicValley | 4 | 15 | 8–12 | 3.0 | 8 | 1.5/0.6 | ×4 |
+| Plains | 1 | 35 | 14–18 | 4.0 | 10 | 2.5/0.4 | ×8 (single bisecting river) |
+
+### RiverFlowBias axis investigation — RESOLVED (pending verify-build)
+**File:** `Patches/RiverSettingsPatch.cs` → `ApplyRiverFlowBias`
+**Current uncommitted state:** both axes inverted
+```csharp
+float fx = 1f - (float)x / (w - 1);   // fx=1 → screen east (x inverted)
+float fz = 1f - (float)z / (h - 1);   // fz=1 → screen north (z inverted)
+```
+
+**Test history that led here:**
+| # | Setting | Strength | Code state | Observed |
+|---|---------|----------|------------|----------|
+| 1 | N_to_S | mid | X inverted, Z natural | Misread, thought correct |
+| 2 | NW_to_SE | 0.3 | X inverted, Z natural | Flow rotated 90° wrong |
+| 3 | NW_to_SE | 0.9 | X natural, Z inverted | Pool in NE — SW_to_NE behavior |
+| 4 | NW_to_SE | 0.9 | Both natural | Pool in NORTHERN part — both axes wrong |
+| 5 | (pending) | TBD | Both inverted | — needs in-game verify |
+
+User confirmed: **"Both axis are definitely flipped. So that needs correcting."**
+
+**Pending:** rebuild Debug, deploy to `Mods/`, user runs one map. If NW_to_SE now pools water at SE → commit, merge `debug/idyllic-tune` → `main`, rebuild Release.
+
+**Last deployed Debug build:** 22:13:39 (stale — was the both-flipped variant from a prior iteration; current source is now both-inverted with cleaned comments).
+
+---
+
 ## Open issue: WaterType-orphan on reload
 
 ### Symptoms
@@ -70,6 +112,15 @@ This matches the visible symptom: **carve channels visible, no water in them.**
 - Today's perf branch is **not** contributing to this bug. Reproduced identically with the pre-perf master Release DLL.
 - Save-side write looks complete (river polygons captured cleanly).
 - Issue manifests on the very first reload of a fresh save (no playtime/edit drift component).
+
+### River-density correlation (2026-05-06 observation)
+After tuning IdyllicValley (NumRivers=4) and Plains (NumRivers=1), the user reported the orphan symptom **appears to have gone away**. This is almost certainly **suppression, not a fix**:
+
+- The bug needs a vanilla lake polygon AND an RR river that overlaps/terminates inside it to trigger the rebuild path that drops the `WaterType` ref.
+- Lower NumRivers → fewer terminator-lake candidates → fewer geometric collisions with vanilla lakes → fewer rebuild events → fewer chances for the orphan path to fire.
+- Higher NumRivers (e.g. a future "river delta" preset, or vanilla-lake-heavy seeds) will resurface it immediately.
+
+**Do not close this issue based on the symptom going quiet.** The underlying `ForceWaterPlaneRebuild` path still doesn't carry forward the original `WaterType` ref for vanilla lake polygons. Fix is still needed in [`RiverWaterAreaBuilder.cs`](Patches/RiverWaterAreaBuilder.cs) per the "Suggested next investigation" above.
 
 ### Suggested next investigation
 Start in [`RiverWaterAreaBuilder.cs`](Patches/RiverWaterAreaBuilder.cs) — specifically `ResolveRiverWaterType` (~line 614) and `BuildWaterShared` (~line 850). The hooks that call these only target RR-added river polygons. Vanilla lake polygons take a different path during `ForceWaterPlaneRebuild` ([RiverPersistence.cs:1511](Patches/RiverPersistence.cs#L1511)). That second path needs the same WaterType resolution logic — probably "find the WaterType this polygon was using before save, look up by name in `lakeTypes`, reassign on the rebuilt area."
