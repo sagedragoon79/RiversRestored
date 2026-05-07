@@ -254,6 +254,17 @@ namespace RiversRestored
         /// true.</summary>
         public static MelonPreferences_Entry<bool>? RiverPreferLakeWaterType { get; private set; }
 
+        /// <summary>When true, swaps the Pond WaterType's visual materials
+        /// (waterMaterial, foamMaterial, etc.) with LakeSmall's. Pond
+        /// classification still happens normally — small/marshy water
+        /// areas are still tagged as Pond — but they render with the blue
+        /// lake material instead of the green pond one. Side-effects every
+        /// Pond water body in the game session, not just RR-tracked rivers
+        /// or lakes. Persists for the rest of the process; no re-do per gen.
+        /// Defaults to false; opt-in for users who want guaranteed
+        /// blue/clear water everywhere.</summary>
+        public static MelonPreferences_Entry<bool>? PondUseLakeMaterial { get; private set; }
+
         // ── Preset value table ─────────────────────────────────────────────
         /// <summary>Bundle of preset values that override the granular cfg
         /// entries when <see cref="RiverPreset"/> is anything other than
@@ -488,8 +499,19 @@ namespace RiversRestored
         /// UI grouping stay clean.</summary>
         private static RiverPresetEntries CreatePresetEntries(string presetName, RiverPresetValues defaults)
         {
+            // CreateCategory returns the existing category if the name is
+            // already registered, so re-init is safe. SetFilePath is REQUIRED
+            // for the category to persist to disk — without it, entries live
+            // only in memory and any value changes get lost on game exit.
+            // Bind to the same MelonPreferences.cfg the main RiversRestored
+            // category uses, so all RR settings end up in one file.
             var cat = MelonPreferences.CreateCategory($"RiversRestored.{presetName}");
-            cat.SetFilePath("UserData/MelonPreferences.cfg", true, true);
+            try { cat.SetFilePath("UserData/MelonPreferences.cfg"); }
+            catch (System.Exception ex)
+            {
+                Log.Warning($"[RR] SetFilePath failed for preset {presetName}: {ex.Message}. " +
+                            $"Values will not persist across launches.");
+            }
             var prefix = $"[{presetName}] ";
 
             return new RiverPresetEntries
@@ -663,6 +685,18 @@ namespace RiversRestored
                              "Pond water can look weird for rivers because it's " +
                              "tinted muddy-green and has lower transparency. Leave " +
                              "ON unless you specifically want green murky rivers.");
+
+            PondUseLakeMaterial = cat.CreateEntry("PondUseLakeMaterial", false,
+                display_name: "Force Pond Water to Render as Lake (Blue)",
+                description: "When ON: every Pond in the game session uses the " +
+                             "blue Lake water material instead of the green Pond one. " +
+                             "Pond classification is unchanged (small/marshy areas " +
+                             "still classify as Pond), only the visual material " +
+                             "swaps. Affects ALL ponds on every map you play, not " +
+                             "just RR-tracked water. Useful if you want consistent " +
+                             "blue water everywhere and don't care about green/murky " +
+                             "pond visual variety. Default OFF (preserves vanilla " +
+                             "appearance).");
 
             NumRivers = cat.CreateEntry("NumRivers", 4,
                 display_name: "Number of Rivers",

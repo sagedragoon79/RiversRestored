@@ -123,6 +123,12 @@ namespace RiversRestored
                     "On (default) = rivers use Lake-type water (clear blue). " +
                     "Off = rivers use whatever water type the map assigns first (often Pond — green/murky).",
                     order: 40, visibleWhen: on));
+            Reg("Master", RiversRestoredMod.PondUseLakeMaterial,
+                NewMeta("Force Pond Water to Render as Lake (Blue)",
+                    "ON = every pond on every map renders with blue Lake material " +
+                    "instead of green Pond. Pond classification unchanged, only " +
+                    "the material swaps. Affects ALL ponds, not just rivers.",
+                    order: 45, visibleWhen: on));
 
             // === Flow Direction === — v1.3.0 directional bias.
             Reg("Flow Direction", RiversRestoredMod.RiverFlowBias,
