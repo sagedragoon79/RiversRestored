@@ -372,17 +372,187 @@ namespace RiversRestored
             },
         };
 
+        // ── Per-preset live-tunable entry bundles ──────────────────────────
+        /// <summary>Holds MelonPreferences_Entry references for one preset's
+        /// 13 tunable values. Mirrors the field set in <see cref="RiverPresetValues"/>.
+        /// Populated in <see cref="OnInitializeMelon"/> via
+        /// <see cref="CreatePresetEntries(string, RiverPresetValues)"/> — one
+        /// per non-Custom preset. <see cref="GetEffectiveValues"/> reads from
+        /// the active preset's entries so the user can tune live in
+        /// MelonPreferences.cfg / KC's settings UI without needing a code
+        /// change. Defaults seeded from the hardcoded <see cref="Presets"/>
+        /// dictionary so first-launch behavior is unchanged.</summary>
+        public class RiverPresetEntries
+        {
+            public MelonPreferences_Entry<int> NumRivers = null!;
+            public MelonPreferences_Entry<int> MinPoints = null!;
+            public MelonPreferences_Entry<int> MinWidth = null!;
+            public MelonPreferences_Entry<int> MaxWidth = null!;
+            public MelonPreferences_Entry<int> InnerRadius = null!;
+            public MelonPreferences_Entry<int> OuterRadius = null!;
+            public MelonPreferences_Entry<int> BlobRadius = null!;
+            public MelonPreferences_Entry<int> BlobStride = null!;
+            public MelonPreferences_Entry<float> TrenchDepth = null!;
+            public MelonPreferences_Entry<int> SmoothPasses = null!;
+            public MelonPreferences_Entry<float> JitterAmplitude = null!;
+            public MelonPreferences_Entry<float> JitterFrequency = null!;
+            public MelonPreferences_Entry<int> FishingAreaMultiplier = null!;
+
+            public RiverPresetValues ToValues() => new RiverPresetValues
+            {
+                NumRivers = NumRivers.Value,
+                MinPoints = MinPoints.Value,
+                MinWidth = MinWidth.Value,
+                MaxWidth = MaxWidth.Value,
+                InnerRadius = InnerRadius.Value,
+                OuterRadius = OuterRadius.Value,
+                BlobRadius = BlobRadius.Value,
+                BlobStride = BlobStride.Value,
+                TrenchDepth = TrenchDepth.Value,
+                SmoothPasses = SmoothPasses.Value,
+                JitterAmplitude = JitterAmplitude.Value,
+                JitterFrequency = JitterFrequency.Value,
+                FishingAreaMultiplier = FishingAreaMultiplier.Value,
+            };
+        }
+
+        /// <summary>One <see cref="RiverPresetEntries"/> per non-Custom preset
+        /// mode. Custom mode continues to use the existing top-level granular
+        /// entries (NumRivers, MinPoints, etc.) — no change there.</summary>
+        public static readonly System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetEntries> PresetEntries
+            = new System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetEntries>();
+
+        // Slider descriptions — extracted to constants so per-preset entries
+        // can reuse the same explanatory text without duplication. Mirror the
+        // descriptions used by the Custom granular sliders below.
+        private const string DESC_NUM_RIVERS =
+            "How many rivers the mod will try to generate on each new map. " +
+            "1-2 = sparse, 4 = balanced, 6+ = water-rich. " +
+            "The actual number may be lower if a seed can't fit them all.";
+        private const string DESC_MIN_POINTS =
+            "Minimum length each river must reach to be accepted, in internal " +
+            "waypoints (each waypoint is roughly 1-3 cells of river path). " +
+            "Lower = shorter rivers allowed. 15 = lets short winding rivers through. " +
+            "Vanilla = 40, which is why vanilla maps almost never have rivers.";
+        private const string DESC_MIN_WIDTH =
+            "Minimum width of the visible flowing-water ribbon, in cells. " +
+            "0 = use vanilla (2-8). Set 4+ to force every river to be at least medium width.";
+        private const string DESC_MAX_WIDTH =
+            "Maximum width of the visible flowing-water ribbon, in cells. " +
+            "0 = use vanilla (2-8). Set 6+ to allow some grand rivers in the mix.";
+        private const string DESC_INNER_RADIUS =
+            "How wide the deep carved channel is, in cells (each cell ≈ 2.5m). " +
+            "3 = narrow stream, 6 = wide visible river, 8+ = grand river. " +
+            "Bump River Bank Width with this so banks don't get too steep.";
+        private const string DESC_OUTER_RADIUS =
+            "How far out the sloped banks extend before reaching natural ground, " +
+            "in cells from centerline. (Bank Width − Channel Width) is the slope " +
+            "distance: 1 cell = sharp drop-off, 4 cells = lake-like blend, " +
+            "6+ = very gradual. Must be ≥ Channel Width.";
+        private const string DESC_BLOB_RADIUS =
+            "Width of the visible water surface in cells from centerline. " +
+            "Match Channel Width so water fills the carved riverbed exactly. " +
+            "Higher = water spills onto bank slope (overflow look). " +
+            "Lower = clean carved-trench look with rocky shores.";
+        private const string DESC_BLOB_STRIDE =
+            "Internal density of the water-surface polygon along the river path. " +
+            "Lower = smoother shape with more building work. Higher = faster gen " +
+            "but may leave gaps on tight bends. 3 = default heavy overlap. " +
+            "Don't change unless gen feels slow.";
+        private const string DESC_TRENCH_DEPTH =
+            "How deep below the water surface the riverbed is dug, in metres. " +
+            "1.5 = visibility floor, 1.8 = lake-like, 2.5 = noticeably deeper, " +
+            "4+ = dramatic canyon rivers.";
+        private const string DESC_SMOOTH_PASSES =
+            "Smoothing passes applied to riverbanks after carving. " +
+            "0 = rough/blocky, 2 = mild, 6 = lake-like softness, 8+ = very gentle. " +
+            "Each pass adds a couple seconds to large-map gen.";
+        private const string DESC_JITTER_AMPLITUDE =
+            "How much rivers wiggle/snake between waypoints, in metres of " +
+            "perpendicular offset. 0 = perfectly straight, 1.5 = subtle natural " +
+            "curves, 5+ = strong snaking (can self-intersect on tight bends).";
+        private const string DESC_JITTER_FREQUENCY =
+            "How many curves fit between each pair of main waypoints. " +
+            "0.6 ≈ one and a bit curves per segment (looks natural). " +
+            "Higher = more zigzaggy, lower = sweeping arcs. " +
+            "Has no effect if Meander Strength is 0.";
+        private const string DESC_FISHING_MULTIPLIER =
+            "Boosts Fishing Shack productivity when placed next to a river. " +
+            "1 = no boost (river fishing feels weak), 4 = good balance, " +
+            "8+ = lush fishing economy. Lakes and ocean fishing are unaffected.";
+
+        /// <summary>Create a fresh MelonPreferences category for one preset
+        /// and populate it with all 13 tunable entries, defaulting to that
+        /// preset's hardcoded values. The category name is
+        /// <c>RiversRestored.&lt;PresetName&gt;</c> so cfg layout and KC's
+        /// UI grouping stay clean.</summary>
+        private static RiverPresetEntries CreatePresetEntries(string presetName, RiverPresetValues defaults)
+        {
+            var cat = MelonPreferences.CreateCategory($"RiversRestored.{presetName}");
+            cat.SetFilePath("UserData/MelonPreferences.cfg", true, true);
+            var prefix = $"[{presetName}] ";
+
+            return new RiverPresetEntries
+            {
+                NumRivers = cat.CreateEntry("NumRivers", defaults.NumRivers,
+                    display_name: prefix + "Number of Rivers",
+                    description: DESC_NUM_RIVERS),
+                MinPoints = cat.CreateEntry("MinPoints", defaults.MinPoints,
+                    display_name: prefix + "Minimum River Length",
+                    description: DESC_MIN_POINTS),
+                MinWidth = cat.CreateEntry("MinWidth", defaults.MinWidth,
+                    display_name: prefix + "Min River Ribbon Width",
+                    description: DESC_MIN_WIDTH),
+                MaxWidth = cat.CreateEntry("MaxWidth", defaults.MaxWidth,
+                    display_name: prefix + "Max River Ribbon Width",
+                    description: DESC_MAX_WIDTH),
+                InnerRadius = cat.CreateEntry("InnerRadius", defaults.InnerRadius,
+                    display_name: prefix + "River Channel Width (full depth)",
+                    description: DESC_INNER_RADIUS),
+                OuterRadius = cat.CreateEntry("OuterRadius", defaults.OuterRadius,
+                    display_name: prefix + "River Bank Width (slope to ground)",
+                    description: DESC_OUTER_RADIUS),
+                BlobRadius = cat.CreateEntry("BlobRadius", defaults.BlobRadius,
+                    display_name: prefix + "Visible Water Width",
+                    description: DESC_BLOB_RADIUS),
+                BlobStride = cat.CreateEntry("BlobStride", defaults.BlobStride,
+                    display_name: prefix + "Water Surface Density (advanced)",
+                    description: DESC_BLOB_STRIDE),
+                TrenchDepth = cat.CreateEntry("TrenchDepth", defaults.TrenchDepth,
+                    display_name: prefix + "River Depth (metres below water)",
+                    description: DESC_TRENCH_DEPTH),
+                SmoothPasses = cat.CreateEntry("SmoothPasses", defaults.SmoothPasses,
+                    display_name: prefix + "Bank Smoothness",
+                    description: DESC_SMOOTH_PASSES),
+                JitterAmplitude = cat.CreateEntry("JitterAmplitude", defaults.JitterAmplitude,
+                    display_name: prefix + "River Meander Strength (metres)",
+                    description: DESC_JITTER_AMPLITUDE),
+                JitterFrequency = cat.CreateEntry("JitterFrequency", defaults.JitterFrequency,
+                    display_name: prefix + "River Meander Frequency",
+                    description: DESC_JITTER_FREQUENCY),
+                FishingAreaMultiplier = cat.CreateEntry("FishingAreaMultiplier", defaults.FishingAreaMultiplier,
+                    display_name: prefix + "River Fishing Productivity Boost",
+                    description: DESC_FISHING_MULTIPLIER),
+            };
+        }
+
         /// <summary>Resolve effective river-shape values, honoring the
         /// preset selector. When RiverPreset is Custom (or unset), values
         /// come from the individual granular cfg entries. Otherwise the
-        /// preset's bundled values win. Used by gen-time code in
-        /// RiverSettingsPatch / RiverCarver / RiverWaterAreaBuilder so
-        /// every gen-time read hits a single source of truth.</summary>
+        /// active preset's per-preset entries win (live-tunable in
+        /// MelonPreferences.cfg / KC). Falls back to the hardcoded
+        /// <see cref="Presets"/> dictionary if entries aren't yet populated
+        /// (defensive — should always exist after OnInitializeMelon).</summary>
         public static RiverPresetValues GetEffectiveValues()
         {
             var mode = RiverPreset?.Value ?? RiverPresetMode.IdyllicValley;
-            if (mode != RiverPresetMode.Custom && Presets.TryGetValue(mode, out var preset))
-                return preset;
+            if (mode != RiverPresetMode.Custom)
+            {
+                if (PresetEntries.TryGetValue(mode, out var entries) && entries != null)
+                    return entries.ToValues();
+                if (Presets.TryGetValue(mode, out var preset))
+                    return preset;
+            }
             // Custom: pull from individual cfg entries (with safe fallbacks
             // so an uninitialized entry doesn't blow up gen).
             return new RiverPresetValues
@@ -663,6 +833,26 @@ namespace RiversRestored
                              "aren't surviving save/reload and you want to share a log " +
                              "for diagnosis. Leave OFF for normal play — the log gets " +
                              "noisy fast.");
+
+            // ── Per-preset live-tunable entries ─────────────────────────────
+            // Create one MelonPreferences category per non-Custom preset, each
+            // with a full mirror of the 13 tunable fields. Defaults seed from
+            // the hardcoded Presets dictionary so first-launch behavior is
+            // unchanged. User can tune in-game (KC settings UI) or via cfg
+            // edits; gen-time reads route through GetEffectiveValues which
+            // prefers these entries over the hardcoded table.
+            foreach (var kvp in Presets)
+            {
+                try
+                {
+                    PresetEntries[kvp.Key] = CreatePresetEntries(kvp.Key.ToString(), kvp.Value);
+                }
+                catch (System.Exception ex)
+                {
+                    Log.Warning($"[RR] Failed to create per-preset entries for {kvp.Key}: {ex.Message}. " +
+                                $"Will fall back to hardcoded preset values for that mode.");
+                }
+            }
 
             // ── Apply granular-visibility based on cfg, and update on toggle ──
             ApplyGranularVisibility();
