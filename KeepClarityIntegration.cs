@@ -221,6 +221,85 @@ namespace RiversRestored
                 NewMeta("Verbose Diagnostics",
                     "Per-WaterArea state on save, per-stage waterAreas counts during gen. " +
                     "Noisy in normal play."));
+
+            // === Per-preset live-tunable sliders ============================
+            // One section per preset, gated so only the currently-selected
+            // preset's sliders appear in the UI. Lets the user tune any
+            // preset without switching to Custom mode (which would reset to
+            // the granular sliders' values). Defaults seed from the
+            // hardcoded preset table at first launch.
+            foreach (var kvp in RiversRestoredMod.PresetEntries)
+            {
+                RegisterPresetEntries(kvp.Key, kvp.Value);
+            }
+        }
+
+        /// <summary>Register all 13 tunable entries for one preset under its
+        /// own KC category. Visibility is gated on master toggle AND the
+        /// active preset matching this preset's mode, so only the selected
+        /// preset's sliders are exposed in the UI.</summary>
+        private static void RegisterPresetEntries(
+            RiverPresetMode mode,
+            RiversRestoredMod.RiverPresetEntries entries)
+        {
+            var name = mode.ToString();
+            var category = $"Preset · {name}";
+            Func<bool> visible = () =>
+                RiversRestoredMod.RiversEnabled.Value
+                && (RiversRestoredMod.RiverPreset?.Value ?? RiverPresetMode.IdyllicValley) == mode;
+
+            Reg(category, entries.NumRivers,
+                NewMeta("Number of Rivers", min: 0, max: 12,
+                    tooltip: "Generator targets this count; final number depends on seed feasibility",
+                    order: 0, visibleWhen: visible));
+            Reg(category, entries.MinPoints,
+                NewMeta("Minimum River Length", min: 1, max: 50,
+                    tooltip: "Min control points for a river to be accepted",
+                    order: 10, visibleWhen: visible));
+            Reg(category, entries.MinWidth,
+                NewMeta("Min Ribbon Width (cells)", min: 0, max: 30,
+                    tooltip: "0 = leave vanilla",
+                    order: 20, visibleWhen: visible));
+            Reg(category, entries.MaxWidth,
+                NewMeta("Max Ribbon Width (cells)", min: 0, max: 60,
+                    tooltip: "0 = leave vanilla",
+                    order: 30, visibleWhen: visible));
+            Reg(category, entries.InnerRadius,
+                NewMeta("Channel Width (full depth, cells)", min: 1, max: 10,
+                    tooltip: "Cells within this distance of centerline are carved to trench depth",
+                    order: 40, visibleWhen: visible));
+            Reg(category, entries.OuterRadius,
+                NewMeta("Bank Width (slope to ground, cells)", min: 2, max: 20,
+                    tooltip: "Where banks blend back to original terrain",
+                    order: 50, visibleWhen: visible));
+            Reg(category, entries.BlobRadius,
+                NewMeta("Visible Water Width (cells)", min: 1, max: 10,
+                    tooltip: "Disc-stamp radius for water-area polygon merging",
+                    order: 60, visibleWhen: visible));
+            Reg(category, entries.BlobStride,
+                NewMeta("Water Surface Density (advanced)", min: 1, max: 10,
+                    tooltip: "Stride between disc stamps along the path; 3 = default, higher = faster gen",
+                    order: 70, visibleWhen: visible));
+            Reg(category, entries.TrenchDepth,
+                NewMeta("River Depth (m below water)", min: 0.1f, max: 5f,
+                    tooltip: "How deep below water surface the trench is carved",
+                    order: 80, visibleWhen: visible));
+            Reg(category, entries.SmoothPasses,
+                NewMeta("Bank Smoothness", min: 0, max: 12,
+                    tooltip: "0 = raw carve, 4 = good default, 8 = very gentle",
+                    order: 90, visibleWhen: visible));
+            Reg(category, entries.JitterAmplitude,
+                NewMeta("River Meander Strength (m)", min: 0f, max: 5f,
+                    tooltip: "0 = straight, larger = more meandering",
+                    order: 100, visibleWhen: visible));
+            Reg(category, entries.JitterFrequency,
+                NewMeta("River Meander Frequency", min: 0f, max: 3f,
+                    tooltip: "Wave oscillations per Voronoi segment",
+                    order: 110, visibleWhen: visible));
+            Reg(category, entries.FishingAreaMultiplier,
+                NewMeta("River Fishing Productivity Boost", min: 1, max: 8,
+                    tooltip: "1 = vanilla (sparse), 4 = playable density, 8+ = lush",
+                    order: 120, visibleWhen: visible));
         }
     }
 }
