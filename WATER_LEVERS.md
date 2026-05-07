@@ -223,7 +223,7 @@ These are fields RR consumes internally (mostly to compute water height, resolve
 #### `TerrainGenerator.mapSettings.height` — Int32, default `62` (Medium map)
 - **Effect:** Maximum vertical extent of the map in world units.
 - **Why RR reads it:** part of the `ComputeWaterY` formula. Also used by carve depth math.
-- **Tuning hypothesis:** larger = taller mountains and deeper valleys are physically possible. FF picks values per map size: Small/Medium/Large/Huge.
+- **Tuning hypothesis:** larger = taller mountains and deeper valleys are physically possible. FF picks values per map size: Small/Medium/Large (verified via runtime enum reflection 2026-05-06 — no Huge value exists in stock FF; the `Size` enum at `TerrainGeneratorController+Size` has exactly three members).
 
 #### `WaterType.riverEndPoint` — Boolean (per type)
 - **Effect:** When true, this WaterType counts as a valid river termination point. Vanilla ships every WaterType with this `false`, which is why vanilla rivers fail to spawn — Voronoi finds candidate paths but every endpoint is rejected.
@@ -378,7 +378,7 @@ These are heightmap-noise parameters. Affect ALL terrain, not just water.
 
 Map dimensions. Most are picked by the user via the New Game UI's map size selector.
 
-- **`size` Size enum (Small/Medium/Large/Huge), `width` Int32 (1920), `depth` Int32 (1920), `height` Int32 (62)** — overall map dimensions
+- **`size` Size enum (Small/Medium/Large — three values only, no Huge in stock FF), `width` Int32 (1920), `depth` Int32 (1920), `height` Int32 (62)** — overall map dimensions
 - **`heightmapResolution` Int32 (384), `textureResolution` Int32 (384), `treeResolution` Int32 (384)** — sampling grids
 - **`textureSmoothing` Int32 (1)** — splat smoothing pass count
 - **`treeSpacing` Int32 (5)** — minimum cells between trees
