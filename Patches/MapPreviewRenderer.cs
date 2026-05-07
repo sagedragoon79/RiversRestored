@@ -98,11 +98,11 @@ namespace RiversRestored.Patches
                     }
                 }
 
-                // Water overlay — paint cells inside any waterArea polygon
-                // bounding box as blue. The polygon test is bbox-only here
-                // (cheap); rivers appear as straight rectangles rather than
-                // curved paths until we add proper polygon raster. Good
-                // enough for v0 to verify shape and placement.
+                // Water overlay — true polygon raster. Each WaterArea has a
+                // `points` bool[,] mask sized to its bounding box; cells where
+                // the mask is true are inside the polygon. Map each masked
+                // world-cell to an output pixel and paint blue. Falls back to
+                // bbox raster only if the mask field is missing or null.
                 int waterPainted = 0;
                 int waterAreaCount = 0;
                 var waField = gd.GetType().GetField("waterAreas",
@@ -116,10 +116,13 @@ namespace RiversRestored.Patches
                     var fMinZ = waType?.GetField("minZ");
                     var fMaxX = waType?.GetField("maxX");
                     var fMaxZ = waType?.GetField("maxZ");
+                    var fPoints = waType?.GetField("points");
 
                     if (fMinX != null && fMinZ != null && fMaxX != null && fMaxZ != null)
                     {
-                        // Heightnoise → output scale factors
+                        // Heightnoise → output scale factors. Water area
+                        // bounds are in heightnoise cell space (same as
+                        // _generationData.heightNoise indexing).
                         float sxOut = (float)(OUT_W - 1) / (hnW - 1);
                         float szOut = (float)(OUT_H - 1) / (hnH - 1);
 
@@ -136,24 +139,48 @@ namespace RiversRestored.Patches
                             }
                             catch { continue; }
 
-                            int pxMin = Mathf.Clamp((int)(minX * sxOut), 0, OUT_W - 1);
-                            int pxMax = Mathf.Clamp((int)(maxX * sxOut), 0, OUT_W - 1);
-                            int pyMin = Mathf.Clamp((int)(minZ * szOut), 0, OUT_H - 1);
-                            int pyMax = Mathf.Clamp((int)(maxZ * szOut), 0, OUT_H - 1);
+                            // Try to read the polygon mask. If missing/null,
+                            // fall back to bbox raster for this area only.
+                            bool[,]? mask = null;
+                            try { mask = fPoints?.GetValue(wa) as bool[,]; }
+                            catch { /* leave mask null → bbox fallback */ }
 
-                            for (int py = pyMin; py <= pyMax; py++)
+                            if (mask != null)
                             {
-                                for (int px = pxMin; px <= pxMax; px++)
+                                int mw = mask.GetLength(0);
+                                int mh = mask.GetLength(1);
+                                for (int lz = 0; lz < mh; lz++)
                                 {
-                                    // Blend with existing grayscale so water
-                                    // looks watery rather than flat blue.
-                                    var prev = pixels[py * OUT_W + px];
-                                    pixels[py * OUT_W + px] = new Color32(
-                                        (byte)(prev.r * 0.25f + 30 * 0.75f),
-                                        (byte)(prev.g * 0.25f + 80 * 0.75f),
-                                        (byte)(prev.b * 0.25f + 160 * 0.75f),
-                                        255);
-                                    waterPainted++;
+                                    int worldZ = minZ + lz;
+                                    if (worldZ < 0 || worldZ >= hnH) continue;
+                                    int py = Mathf.Clamp((int)(worldZ * szOut), 0, OUT_H - 1);
+                                    for (int lx = 0; lx < mw; lx++)
+                                    {
+                                        if (!mask[lx, lz]) continue;
+                                        int worldX = minX + lx;
+                                        if (worldX < 0 || worldX >= hnW) continue;
+                                        int px = Mathf.Clamp((int)(worldX * sxOut), 0, OUT_W - 1);
+                                        PaintWaterPixel(pixels, py * OUT_W + px);
+                                        waterPainted++;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                // Bbox fallback (rare — only if mask field
+                                // missing). Keeps coverage so we always see
+                                // SOMETHING for every water area.
+                                int pxMin = Mathf.Clamp((int)(minX * sxOut), 0, OUT_W - 1);
+                                int pxMax = Mathf.Clamp((int)(maxX * sxOut), 0, OUT_W - 1);
+                                int pyMin = Mathf.Clamp((int)(minZ * szOut), 0, OUT_H - 1);
+                                int pyMax = Mathf.Clamp((int)(maxZ * szOut), 0, OUT_H - 1);
+                                for (int py = pyMin; py <= pyMax; py++)
+                                {
+                                    for (int px = pxMin; px <= pxMax; px++)
+                                    {
+                                        PaintWaterPixel(pixels, py * OUT_W + px);
+                                        waterPainted++;
+                                    }
                                 }
                             }
                         }
@@ -188,6 +215,19 @@ namespace RiversRestored.Patches
             {
                 Log($"Render failed ({source}): {ex.Message}");
             }
+        }
+
+        /// <summary>Blend a blue water tint over the existing grayscale base
+        /// at the given pixel index. 75% blue, 25% retained heightmap so the
+        /// water still hints at depth/relief underneath.</summary>
+        private static void PaintWaterPixel(Color32[] pixels, int idx)
+        {
+            var prev = pixels[idx];
+            pixels[idx] = new Color32(
+                (byte)(prev.r * 0.25f + 30 * 0.75f),
+                (byte)(prev.g * 0.25f + 80 * 0.75f),
+                (byte)(prev.b * 0.25f + 160 * 0.75f),
+                255);
         }
 
         /// <summary>Best-effort: pull a seed string off the generator for the
