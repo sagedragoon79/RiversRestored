@@ -101,24 +101,43 @@ namespace RiversRestored.Patches
             if (!_spritesResolved) TryRebindSprites();
             if (!_fontResolved) TryRebindFont();
 
-            // Visibility — show only when the pref is on AND we have a preview.
-            bool wantVisible = (RiversRestoredMod.ShowPreviewOverlay?.Value ?? false)
-                              && LatestPreview != null;
+            // Visibility — show whenever the pref is on. If no preview
+            // texture exists yet, we show a placeholder + the PREVIEW
+            // button so the user has a way to trigger one. (Previously
+            // we required LatestPreview != null too, which caused a
+            // chicken-and-egg problem when Pangu wasn't running: no
+            // texture → panel hidden → button unreachable → no way to
+            // generate a texture.)
+            bool wantVisible = RiversRestoredMod.ShowPreviewOverlay?.Value ?? false;
             if (_shadowRT.gameObject.activeSelf != wantVisible)
                 _shadowRT.gameObject.SetActive(wantVisible);
 
             if (!wantVisible) return;
 
             // Rebind texture if it changed (renderer hands us a new
-            // Texture2D after each gen).
-            if (_previewImage != null && _previewImage.texture != LatestPreview)
-                _previewImage.texture = LatestPreview;
+            // Texture2D after each gen). When no texture exists, dim the
+            // RawImage to a near-black tint so the empty state reads
+            // intentionally rather than as a glitch.
+            if (_previewImage != null)
+            {
+                if (_previewImage.texture != LatestPreview)
+                    _previewImage.texture = LatestPreview;
+                _previewImage.color = LatestPreview != null
+                    ? Color.white
+                    : new Color(0.10f, 0.10f, 0.12f, 1f);
+            }
 
-            // Refresh caption.
-            if (_captionText != null && _captionText.text != LatestCaption)
-                _captionText.text = string.IsNullOrEmpty(LatestCaption)
-                    ? "Rivers Restored — preview"
-                    : LatestCaption;
+            // Refresh caption — show a hint when there's no preview yet.
+            if (_captionText != null)
+            {
+                string desired = LatestPreview == null
+                    ? "Click PREVIEW to generate"
+                    : (string.IsNullOrEmpty(LatestCaption)
+                       ? "Rivers Restored — preview"
+                       : LatestCaption);
+                if (_captionText.text != desired)
+                    _captionText.text = desired;
+            }
         }
 
         /// <summary>Builds the Canvas → Shadow → Border → Backdrop → (image+caption)

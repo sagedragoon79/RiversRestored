@@ -26,6 +26,12 @@ namespace RiversRestored.Patches
         // Throttle re-clicks while a preview is mid-flight.
         private static bool _busy = false;
 
+        // Lazily-spawned worker GameObject. Used only when no live
+        // TerrainGenerator exists in the scene (e.g. user is on the New
+        // Game screen without Pangu running). Persists across previews
+        // so we don't pay the AddComponent cost per click.
+        private static GameObject? _workerGO;
+
         public static void TriggerPreview()
         {
             if (_busy)
@@ -39,12 +45,19 @@ namespace RiversRestored.Patches
                 var tg = FindUsableTerrainGenerator();
                 if (tg == null)
                 {
-                    Log("No TerrainGenerator instance found in scene — preview unavailable. " +
-                        "Try enabling Pangu's 'Preview Map Seed' to spawn one, then click again.");
-                    return;
+                    tg = SpawnWorkerGenerator();
+                    if (tg == null)
+                    {
+                        Log("Could not spawn a TerrainGenerator worker. " +
+                            "Preview unavailable. Try enabling Pangu's 'Preview Map Seed'.");
+                        return;
+                    }
+                    Log($"Spawned worker TerrainGenerator on '{tg.gameObject.name}'.");
                 }
-
-                Log($"Using TerrainGenerator on '{tg.gameObject.name}' for preview.");
+                else
+                {
+                    Log($"Using existing TerrainGenerator on '{tg.gameObject.name}' for preview.");
+                }
 
                 // Read seed from FF's seed input field if available.
                 string seed = TryReadSeedFromUI();
@@ -107,6 +120,37 @@ namespace RiversRestored.Patches
 
             // Fallback: scene-wide search.
             return UnityEngine.Object.FindObjectOfType<TerrainGenerator>();
+        }
+
+        /// <summary>Spawn a hidden GameObject with a TerrainGenerator
+        /// component for previewing. Reuses the same GO across previews.
+        /// V2: this is a minimal worker — no scene template loading,
+        /// just the bare component. Some stages may NRE if they reach
+        /// for prefabs that aren't loaded; if so, the stage invocation
+        /// catches the exception and continues to the next.</summary>
+        private static TerrainGenerator? SpawnWorkerGenerator()
+        {
+            try
+            {
+                if (_workerGO != null)
+                {
+                    var existing = _workerGO.GetComponent<TerrainGenerator>();
+                    if (existing != null) return existing;
+                    UnityEngine.Object.Destroy(_workerGO);
+                    _workerGO = null;
+                }
+
+                _workerGO = new GameObject("RR_PreviewWorker");
+                UnityEngine.Object.DontDestroyOnLoad(_workerGO);
+                var tg = _workerGO.AddComponent<TerrainGenerator>();
+                return tg;
+            }
+            catch (Exception ex)
+            {
+                Log($"Worker spawn failed: {ex.Message}");
+                if (_workerGO != null) { UnityEngine.Object.Destroy(_workerGO); _workerGO = null; }
+                return null;
+            }
         }
 
         /// <summary>Best-effort: read the seed text from FF's seed input
