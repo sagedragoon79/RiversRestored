@@ -209,7 +209,10 @@ namespace RiversRestored.Patches
             // to read as "hanging from" the edge.
             Sprite? topFancySprite = FindSpriteByName(SPRITE_TOP_FANCY);
             const int FANCY_H = 50;
-            const int FANCY_OVERFLOW = 4;  // hangs slightly above border edge
+            // Hang ABOVE the border edge so the ornament reads as draped
+            // onto the frame, not buried inside. Halfway-up = 25 keeps
+            // the bottom edge of the sprite roughly on the border line.
+            const int FANCY_OVERFLOW = 25;
 
             var fancyLGO = new GameObject("TopFancy_L");
             fancyLGO.transform.SetParent(borderRT, false);
@@ -240,6 +243,12 @@ namespace RiversRestored.Patches
             if (topFancySprite != null) { _topFancyR.sprite = topFancySprite; _topFancyR.type = Image.Type.Sliced; }
             _topFancyR.color = Color.white;
             _topFancyR.raycastTarget = false;
+
+            // Z-order fix: ensure the ornaments render LAST among their
+            // siblings (Backdrop, etc.), so they paint ON TOP of the map
+            // instead of behind it. Sibling index = paint order in UGUI.
+            fancyLGO.transform.SetAsLastSibling();
+            fancyRGO.transform.SetAsLastSibling();
 
             // Mark resolved status for lazy retry in Update.
             _spritesResolved = (shadowSprite != null && borderSprite != null && topFancySprite != null);
