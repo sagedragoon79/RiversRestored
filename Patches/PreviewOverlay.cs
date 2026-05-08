@@ -243,8 +243,71 @@ namespace RiversRestored.Patches
             _captionText.enableWordWrapping = false;
             _captionText.overflowMode = TextOverflowModes.Ellipsis;
 
+            // ── Generate-Preview button (top-right of panel) ──────────────
+            // Triggers an on-demand preview gen so the panel populates
+            // even when Pangu's preview-gen path isn't running. Sits as
+            // a small icon in the top-right corner of the backdrop.
+            BuildPreviewButton(backdropRT, font, borderSprite);
+
             // Start hidden — Update() flips it on when conditions met.
             _shadowRT.gameObject.SetActive(false);
+        }
+
+        /// <summary>Add a small "Generate Preview" button anchored to the
+        /// top-right corner of the panel. Clicking it triggers an on-demand
+        /// preview gen via <see cref="PreviewGenWorker.TriggerPreview"/>,
+        /// breaking the dependency on Pangu's preview-gen running.</summary>
+        private void BuildPreviewButton(RectTransform parent, TMP_FontAsset? font, Sprite? buttonSprite)
+        {
+            var btnGO = new GameObject("PreviewButton");
+            btnGO.transform.SetParent(parent, false);
+            var rt = btnGO.AddComponent<RectTransform>();
+            rt.anchorMin = new Vector2(1f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(1f, 1f);
+            rt.anchoredPosition = new Vector2(-8f, -8f);
+            rt.sizeDelta = new Vector2(110f, 30f);
+
+            var bgImg = btnGO.AddComponent<Image>();
+            if (buttonSprite != null) { bgImg.sprite = buttonSprite; bgImg.type = Image.Type.Sliced; }
+            bgImg.color = new Color(0.18f, 0.18f, 0.22f, 0.95f);
+            bgImg.raycastTarget = true;
+
+            var btn = btnGO.AddComponent<Button>();
+            btn.targetGraphic = bgImg;
+
+            // Hover/press color states
+            var colors = btn.colors;
+            colors.normalColor = new Color(1f, 1f, 1f, 1f);
+            colors.highlightedColor = new Color(1.2f, 1.2f, 1.0f, 1f);
+            colors.pressedColor = new Color(0.7f, 0.7f, 0.7f, 1f);
+            colors.disabledColor = new Color(0.5f, 0.5f, 0.5f, 0.5f);
+            btn.colors = colors;
+
+            // Button label
+            var lblGO = new GameObject("Label");
+            lblGO.transform.SetParent(rt, false);
+            var lblRT = lblGO.AddComponent<RectTransform>();
+            lblRT.anchorMin = Vector2.zero;
+            lblRT.anchorMax = Vector2.one;
+            lblRT.offsetMin = Vector2.zero;
+            lblRT.offsetMax = Vector2.zero;
+            var lbl = lblGO.AddComponent<TextMeshProUGUI>();
+            if (font != null) lbl.font = font;
+            lbl.alignment = TextAlignmentOptions.Center;
+            lbl.fontSize = 13;
+            lbl.color = new Color(0.95f, 0.92f, 0.82f, 1f);
+            lbl.text = "PREVIEW";
+            lbl.raycastTarget = false;
+
+            btn.onClick.AddListener(() =>
+            {
+                try { PreviewGenWorker.TriggerPreview(); }
+                catch (Exception ex)
+                {
+                    MelonLogger.Warning($"[RR][PreviewOverlay] Preview button error: {ex.Message}");
+                }
+            });
         }
 
         /// <summary>Create a single corner ornament Image at a specified
