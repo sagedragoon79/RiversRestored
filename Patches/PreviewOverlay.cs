@@ -209,10 +209,11 @@ namespace RiversRestored.Patches
             // to read as "hanging from" the edge.
             Sprite? topFancySprite = FindSpriteByName(SPRITE_TOP_FANCY);
             const int FANCY_H = 50;
-            // Most of the sprite hangs ABOVE the border edge (40px above,
-            // 10px below). FF's dialog has the ornaments visibly perched
-            // on top of the frame, not buried inside.
-            const int FANCY_OVERFLOW = 40;
+            // Position rect mostly INSIDE the panel: 10px above border,
+            // 40px below. The Y-flip below puts the ornament's hanging
+            // end pointing DOWN into the panel (matches FF's look where
+            // the metal scrollwork drapes from the top frame edge).
+            const int FANCY_OVERFLOW = 10;
 
             // Sprite slice is 11,0,72,0 — the 72px right region carries the
             // ornament. To get ornaments at the OUTER corners (matching
@@ -228,7 +229,9 @@ namespace RiversRestored.Patches
             fancyLRT.anchoredPosition = new Vector2(0f, FANCY_OVERFLOW);
             fancyLRT.sizeDelta = new Vector2(0f, FANCY_H);
             // X-flip so ornament-end appears at OUTER-LEFT corner.
-            fancyLRT.localScale = new Vector3(-1f, 1f, 1f);
+            // Y-flip so ornament hangs DOWN into panel (sprite's natural
+            // orientation has the decorative end at top).
+            fancyLRT.localScale = new Vector3(-1f, -1f, 1f);
             _topFancyL = fancyLGO.AddComponent<Image>();
             if (topFancySprite != null) { _topFancyL.sprite = topFancySprite; _topFancyL.type = Image.Type.Sliced; }
             _topFancyL.color = Color.white;
@@ -242,7 +245,9 @@ namespace RiversRestored.Patches
             fancyRRT.pivot = new Vector2(0.5f, 1f);
             fancyRRT.anchoredPosition = new Vector2(0f, FANCY_OVERFLOW);
             fancyRRT.sizeDelta = new Vector2(0f, FANCY_H);
-            // Unflipped — ornament naturally at OUTER-RIGHT corner.
+            // Y-flip only — ornament naturally at OUTER-RIGHT corner; X
+            // stays as-is. Y-flip matches the LEFT half so both hang DOWN.
+            fancyRRT.localScale = new Vector3(1f, -1f, 1f);
             _topFancyR = fancyRGO.AddComponent<Image>();
             if (topFancySprite != null) { _topFancyR.sprite = topFancySprite; _topFancyR.type = Image.Type.Sliced; }
             _topFancyR.color = Color.white;
