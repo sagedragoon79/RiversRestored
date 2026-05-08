@@ -209,11 +209,16 @@ namespace RiversRestored.Patches
             // to read as "hanging from" the edge.
             Sprite? topFancySprite = FindSpriteByName(SPRITE_TOP_FANCY);
             const int FANCY_H = 50;
-            // Hang ABOVE the border edge so the ornament reads as draped
-            // onto the frame, not buried inside. Halfway-up = 25 keeps
-            // the bottom edge of the sprite roughly on the border line.
-            const int FANCY_OVERFLOW = 25;
+            // Most of the sprite hangs ABOVE the border edge (40px above,
+            // 10px below). FF's dialog has the ornaments visibly perched
+            // on top of the frame, not buried inside.
+            const int FANCY_OVERFLOW = 40;
 
+            // Sprite slice is 11,0,72,0 — the 72px right region carries the
+            // ornament. To get ornaments at the OUTER corners (matching
+            // FF's New Game dialog), the LEFT half must be X-flipped (so
+            // its ornament-end appears at the outer-left), and the RIGHT
+            // half stays unflipped (ornament naturally at outer-right).
             var fancyLGO = new GameObject("TopFancy_L");
             fancyLGO.transform.SetParent(borderRT, false);
             var fancyLRT = fancyLGO.AddComponent<RectTransform>();
@@ -222,6 +227,8 @@ namespace RiversRestored.Patches
             fancyLRT.pivot = new Vector2(0.5f, 1f);
             fancyLRT.anchoredPosition = new Vector2(0f, FANCY_OVERFLOW);
             fancyLRT.sizeDelta = new Vector2(0f, FANCY_H);
+            // X-flip so ornament-end appears at OUTER-LEFT corner.
+            fancyLRT.localScale = new Vector3(-1f, 1f, 1f);
             _topFancyL = fancyLGO.AddComponent<Image>();
             if (topFancySprite != null) { _topFancyL.sprite = topFancySprite; _topFancyL.type = Image.Type.Sliced; }
             _topFancyL.color = Color.white;
@@ -235,10 +242,7 @@ namespace RiversRestored.Patches
             fancyRRT.pivot = new Vector2(0.5f, 1f);
             fancyRRT.anchoredPosition = new Vector2(0f, FANCY_OVERFLOW);
             fancyRRT.sizeDelta = new Vector2(0f, FANCY_H);
-            // Mirror so ornament-end faces inward toward center, matching
-            // the LEFT instance (which keeps its ornament-end at right by
-            // the sprite's natural slice).
-            fancyRRT.localScale = new Vector3(-1f, 1f, 1f);
+            // Unflipped — ornament naturally at OUTER-RIGHT corner.
             _topFancyR = fancyRGO.AddComponent<Image>();
             if (topFancySprite != null) { _topFancyR.sprite = topFancySprite; _topFancyR.type = Image.Type.Sliced; }
             _topFancyR.color = Color.white;
