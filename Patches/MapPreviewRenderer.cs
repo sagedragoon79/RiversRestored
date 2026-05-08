@@ -74,40 +74,44 @@ namespace RiversRestored.Patches
                 float hnRange = Mathf.Max(0.0001f, hnMax - hnMin);
 
                 // Heightmap grayscale base — sample heightnoise into the
-                // output buffer using FF's screen orientation convention,
-                // verified against the open-source ff-game-map dev tool
-                // (mikh-abc/ff-game-map MapWidget.cpp line 113):
-                //
-                //     p.drawRect(imageWidth - y * scale, x * scale, ...)
+                // output buffer using FF's screen orientation convention and
+                // the heightmap-shading formula from the open-source
+                // ff-game-map dev tool (mikh-abc/ff-game-map MapWidget.cpp:
+                //   v = 1 - (heightMap[x][y] - heightMin) / (heightMax - heightMin)
+                //   if (v < 0.5 && cell is in outer 10%) v = 0.5
+                //   color = RGB(v, v, v)  (per-channel float, then * 255)
                 //
                 // That dev tool reads FF saves and renders maps that match
-                // the in-game minimap. Its mapping:
-                //   heights[x][y] → image pixel (W-1-y, x)   // top-left origin
+                // the in-game minimap. Inverting v (high terrain = dark, low
+                // terrain = light) produces topographic shaded relief that
+                // emphasizes flat farmable land. The border-clamp to 0.5
+                // prevents the map's edge mountain ridge from washing out the
+                // rest of the scene with pure-black pixels.
                 //
-                // Translating to our Texture2D buffer (BOTTOM-left origin —
-                // pixels[idx]'s row 0 is the bottom of the saved PNG):
-                //   For texture pixel (px, py):
-                //     hx (heightnoise X) = (H_OUT - 1 - py) scaled to hnW
-                //     hz (heightnoise Z) = (W_OUT - 1 - px) scaled to hnH
-                //
-                // Net effect: world X axis becomes image vertical axis,
-                // world Z axis becomes image horizontal axis (right-to-left).
-                // Result aligns with the in-game minimap orientation.
+                // Axis convention (transpose + Z-flip):
+                //   pixel(px, py) shows heightnoise[hx, hz] where:
+                //     hx = (H_OUT - 1 - py) scaled to hnW
+                //     hz = (W_OUT - 1 - px) scaled to hnH
+                int hxBorder = hnW / 10;
+                int hzBorder = hnH / 10;
                 for (int py = 0; py < OUT_H; py++)
                 {
-                    // py -> hx (heightnoise X)
                     int hx = (int)((float)(OUT_H - 1 - py) / (OUT_H - 1) * (hnW - 1));
                     for (int px = 0; px < OUT_W; px++)
                     {
-                        // px -> hz (heightnoise Z, inverted)
                         int hz = (int)((float)(OUT_W - 1 - px) / (OUT_W - 1) * (hnH - 1));
                         float v = heightNoise[hx, hz];
                         float n = (v - hnMin) / hnRange;
                         n = Mathf.Clamp01(n);
-                        // Curved gamma so mid-elevation lands brighter — easier
-                        // to read terrain at a glance.
-                        float g = Mathf.Pow(n, 0.7f);
-                        byte b = (byte)(g * 220f + 20f);  // 20..240, never pure black/white
+                        // Inverted: high terrain → dark, low terrain → light.
+                        float devV = 1f - n;
+                        // Border clamp: cells in the outer 10% that would
+                        // render dark get pushed up to 0.5 gray so map edges
+                        // don't go pure black. Per dev tool's heuristic.
+                        bool inBorder = hx < hxBorder || hx > hnW - hxBorder
+                                     || hz < hzBorder || hz > hnH - hzBorder;
+                        if (devV < 0.5f && inBorder) devV = 0.5f;
+                        byte b = (byte)(devV * 255f);
                         pixels[py * OUT_W + px] = new Color32(b, b, b, 255);
                     }
                 }
@@ -233,15 +237,17 @@ namespace RiversRestored.Patches
         }
 
         /// <summary>Blend a blue water tint over the existing grayscale base
-        /// at the given pixel index. 75% blue, 25% retained heightmap so the
-        /// water still hints at depth/relief underneath.</summary>
+        /// at the given pixel index. Color matches the ff-game-map dev tool's
+        /// water tone: RGB(128, 194, 255) — light sky blue. 80% blue, 20%
+        /// retained heightmap so water still hints at relief underneath.</summary>
         private static void PaintWaterPixel(Color32[] pixels, int idx)
         {
             var prev = pixels[idx];
+            const float blend = 0.80f;
             pixels[idx] = new Color32(
-                (byte)(prev.r * 0.25f + 30 * 0.75f),
-                (byte)(prev.g * 0.25f + 80 * 0.75f),
-                (byte)(prev.b * 0.25f + 160 * 0.75f),
+                (byte)(prev.r * (1f - blend) + 128 * blend),
+                (byte)(prev.g * (1f - blend) + 194 * blend),
+                (byte)(prev.b * (1f - blend) + 255 * blend),
                 255);
         }
 
