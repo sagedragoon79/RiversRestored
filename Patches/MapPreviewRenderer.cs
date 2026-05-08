@@ -131,8 +131,6 @@ namespace RiversRestored.Patches
                 // because heightnoise units are 0..1 (very flat compared to
                 // cell width); without it, hillshade is invisible.
                 const float SLOPE_EXAGGERATE = 80f;  // empirical — readable shadows on typical seeds
-                // Precompute light direction (NW, 45° altitude). Normalized.
-                // World convention: x = east-west, z = north-south.
                 float lightAlt = 45f * Mathf.Deg2Rad;
                 float lightAz = 315f * Mathf.Deg2Rad;
                 Vector3 light = new Vector3(
@@ -140,14 +138,24 @@ namespace RiversRestored.Patches
                     Mathf.Sin(lightAlt),
                     Mathf.Cos(lightAz) * Mathf.Cos(lightAlt)).normalized;
 
+                // Axis convention: NATURAL (no transpose, no flip). The
+                // dev-tool's transpose+Z-flip mapping (which I tried earlier
+                // based on ff-game-map MapWidget.cpp) produced output flipped
+                // along the anti-diagonal vs FF's actual gameplay minimap.
+                // Theory: the dev tool reads SAVED game files which may be
+                // stored differently from runtime heightnoise indexing, OR
+                // FF's preview-gen path produces heightnoise in a different
+                // orientation than the save format. Empirically verified:
+                // natural mapping matches gameplay/Pangu's preview.
+                //   pixel(px, py) → heightnoise[px scaled to hnW, py scaled to hnH]
                 int hxBorder = hnW / 10;
                 int hzBorder = hnH / 10;
                 for (int py = 0; py < OUT_H; py++)
                 {
-                    int hx = (int)((float)(OUT_H - 1 - py) / (OUT_H - 1) * (hnW - 1));
+                    int hz = (int)((float)py / (OUT_H - 1) * (hnH - 1));
                     for (int px = 0; px < OUT_W; px++)
                     {
-                        int hz = (int)((float)(OUT_W - 1 - px) / (OUT_W - 1) * (hnH - 1));
+                        int hx = (int)((float)px / (OUT_W - 1) * (hnW - 1));
                         float v = heightNoise[hx, hz];
                         float n = Mathf.Clamp01((v - hnMin) / hnRange);
 
@@ -212,13 +220,11 @@ namespace RiversRestored.Patches
 
                     if (fMinX != null && fMinZ != null && fMaxX != null && fMaxZ != null)
                     {
-                        // World cell → texture pixel mapping per ff-game-map
-                        // dev tool's convention (transpose + Z-flip):
-                        //   pixel_y = (H_OUT - 1) - worldX_scaled
-                        //   pixel_x = (W_OUT - 1) - worldZ_scaled
-                        // Same convention used by the heightmap loop above.
-                        float sxOut = (float)(OUT_H - 1) / (hnW - 1);  // worldX → pixel Y
-                        float szOut = (float)(OUT_W - 1) / (hnH - 1);  // worldZ → pixel X
+                        // Natural mapping (matches the heightmap loop above):
+                        //   pixel_x = worldX_scaled
+                        //   pixel_y = worldZ_scaled
+                        float sxOut = (float)(OUT_W - 1) / (hnW - 1);  // worldX → pixel X
+                        float szOut = (float)(OUT_H - 1) / (hnH - 1);  // worldZ → pixel Y
 
                         foreach (var wa in waterAreas)
                         {
@@ -233,11 +239,9 @@ namespace RiversRestored.Patches
                             }
                             catch { continue; }
 
-                            // Try to read the polygon mask. If missing/null,
-                            // fall back to bbox raster for this area only.
                             bool[,]? mask = null;
                             try { mask = fPoints?.GetValue(wa) as bool[,]; }
-                            catch { /* leave mask null → bbox fallback */ }
+                            catch { }
 
                             if (mask != null)
                             {
@@ -247,13 +251,13 @@ namespace RiversRestored.Patches
                                 {
                                     int worldZ = minZ + lz;
                                     if (worldZ < 0 || worldZ >= hnH) continue;
-                                    int px = Mathf.Clamp((int)((hnH - 1 - worldZ) * szOut), 0, OUT_W - 1);
+                                    int py = Mathf.Clamp((int)(worldZ * szOut), 0, OUT_H - 1);
                                     for (int lx = 0; lx < mw; lx++)
                                     {
                                         if (!mask[lx, lz]) continue;
                                         int worldX = minX + lx;
                                         if (worldX < 0 || worldX >= hnW) continue;
-                                        int py = Mathf.Clamp((int)((hnW - 1 - worldX) * sxOut), 0, OUT_H - 1);
+                                        int px = Mathf.Clamp((int)(worldX * sxOut), 0, OUT_W - 1);
                                         PaintWaterPixel(pixels, py * OUT_W + px);
                                         waterPainted++;
                                     }
@@ -261,12 +265,10 @@ namespace RiversRestored.Patches
                             }
                             else
                             {
-                                // Bbox fallback. Same axis convention as
-                                // the polygon path above.
-                                int pxLo = Mathf.Clamp((int)((hnH - 1 - maxZ) * szOut), 0, OUT_W - 1);
-                                int pxHi = Mathf.Clamp((int)((hnH - 1 - minZ) * szOut), 0, OUT_W - 1);
-                                int pyLo = Mathf.Clamp((int)((hnW - 1 - maxX) * sxOut), 0, OUT_H - 1);
-                                int pyHi = Mathf.Clamp((int)((hnW - 1 - minX) * sxOut), 0, OUT_H - 1);
+                                int pxLo = Mathf.Clamp((int)(minX * sxOut), 0, OUT_W - 1);
+                                int pxHi = Mathf.Clamp((int)(maxX * sxOut), 0, OUT_W - 1);
+                                int pyLo = Mathf.Clamp((int)(minZ * szOut), 0, OUT_H - 1);
+                                int pyHi = Mathf.Clamp((int)(maxZ * szOut), 0, OUT_H - 1);
                                 for (int py = pyLo; py <= pyHi; py++)
                                 {
                                     for (int px = pxLo; px <= pxHi; px++)
@@ -375,8 +377,9 @@ namespace RiversRestored.Patches
                 }
                 if (minerals == null || minerals.Count == 0) return 0;
 
-                float sxOut = (float)(OUT_H - 1) / (hnW - 1);
-                float szOut = (float)(OUT_W - 1) / (hnH - 1);
+                // Natural mapping — matches the heightmap and water raster.
+                float sxOut = (float)(OUT_W - 1) / (hnW - 1);
+                float szOut = (float)(OUT_H - 1) / (hnH - 1);
 
                 int painted = 0;
                 foreach (var m in minerals)
@@ -411,17 +414,13 @@ namespace RiversRestored.Patches
 
                     Color32 markerColor = MineralTypeToColor(typeStr);
 
-                    // World pos (x, z) → heightnoise cell coords. FF cell
-                    // size is 5m typically — divide world meters by 5 to
-                    // get cell index. If markers land in obviously wrong
-                    // spots, we'll need to discover cellSize properly.
                     const float CELL_SIZE = 5f;
                     float worldX = pos.x / CELL_SIZE;
                     float worldZ = pos.z / CELL_SIZE;
                     if (worldX < 0 || worldX >= hnW || worldZ < 0 || worldZ >= hnH) continue;
 
-                    int py = Mathf.Clamp((int)((hnW - 1 - worldX) * sxOut), 0, OUT_H - 1);
-                    int px = Mathf.Clamp((int)((hnH - 1 - worldZ) * szOut), 0, OUT_W - 1);
+                    int px = Mathf.Clamp((int)(worldX * sxOut), 0, OUT_W - 1);
+                    int py = Mathf.Clamp((int)(worldZ * szOut), 0, OUT_H - 1);
 
                     // 3×3 dot for visibility.
                     for (int dy = -1; dy <= 1; dy++)
