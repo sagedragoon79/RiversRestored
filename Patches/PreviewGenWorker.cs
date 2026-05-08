@@ -94,6 +94,10 @@ namespace RiversRestored.Patches
                     InvokeStageIfPresent(tg, s);
                 }
 
+                // Diagnostic state dump so we can see what initialization
+                // worked vs failed. Log-only; doesn't affect rendering.
+                DumpGeneratorState(tg);
+
                 // Render the result — TryRender is gated by EnableMapPreviewRender
                 // so it'll only fire if the user has the pref on.
                 MapPreviewRenderer.TryRender(tg, "PreviewButton");
@@ -209,7 +213,10 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Invoke a stage method by name, no-op if not present.</summary>
+        /// <summary>Invoke a stage method by name, no-op if not present.
+        /// Unwraps TargetInvocationException to show the real inner
+        /// exception in the log — the default "Exception has been thrown
+        /// by the target of an invocation" message is useless on its own.</summary>
         private static void InvokeStageIfPresent(TerrainGenerator tg, string methodName)
         {
             try
@@ -218,9 +225,65 @@ namespace RiversRestored.Patches
                 if (m == null) return;
                 m.Invoke(tg, null);
             }
+            catch (TargetInvocationException tex)
+            {
+                var inner = tex.InnerException;
+                Log($"  {methodName} threw: {(inner != null ? inner.GetType().Name + ": " + inner.Message : tex.Message)}");
+            }
             catch (Exception ex)
             {
-                Log($"  {methodName} threw: {ex.Message}");
+                Log($"  {methodName} threw: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        /// <summary>Diagnostic dump of TerrainGenerator's instance state
+        /// after the stage sequence runs. Logs which key fields are
+        /// populated vs null, so we know what initialization is missing.</summary>
+        private static void DumpGeneratorState(TerrainGenerator tg)
+        {
+            try
+            {
+                var t = typeof(TerrainGenerator);
+                foreach (var name in new[] { "mapSettings", "baseSettings", "riverSettings",
+                                              "waterSettings", "biomeSettings", "_generationData" })
+                {
+                    var f = AccessTools.Field(t, name);
+                    if (f == null) { Log($"  state: {name} = <field missing>"); continue; }
+                    var v = f.GetValue(tg);
+                    Log($"  state: {name} = {(v == null ? "<null>" : v.GetType().Name)}");
+                }
+
+                // Inspect _generationData for heightnoise + waterAreas
+                var gdField = AccessTools.Field(t, "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd != null)
+                {
+                    var hnField = gd.GetType().GetField("heightNoise",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (hnField?.GetValue(gd) is float[,] hn)
+                    {
+                        float min = float.MaxValue, max = float.MinValue;
+                        for (int x = 0; x < hn.GetLength(0); x++)
+                            for (int z = 0; z < hn.GetLength(1); z++)
+                            {
+                                if (hn[x, z] < min) min = hn[x, z];
+                                if (hn[x, z] > max) max = hn[x, z];
+                            }
+                        Log($"  state: heightNoise[{hn.GetLength(0)}x{hn.GetLength(1)}] min={min:F3} max={max:F3}");
+                    }
+                    else
+                    {
+                        Log($"  state: heightNoise = <null>");
+                    }
+                    var waField = gd.GetType().GetField("waterAreas",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    var wa = waField?.GetValue(gd) as System.Collections.IList;
+                    Log($"  state: waterAreas count={(wa?.Count ?? -1)}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"  state dump failed: {ex.Message}");
             }
         }
 
