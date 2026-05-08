@@ -74,19 +74,33 @@ namespace RiversRestored.Patches
                 float hnRange = Mathf.Max(0.0001f, hnMax - hnMin);
 
                 // Heightmap grayscale base — sample heightnoise into the
-                // output buffer using nearest-neighbor scale-and-flip.
-                // Output Y axis is bottom-up (Texture2D); heightnoise z axis
-                // mapping per RR's other code: z=0 → screen south (heightmap
-                // both-axes-inverted convention used by ApplyRiverFlowBias).
-                // For preview purposes we render heightnoise[x,z] directly to
-                // pixel (x_pixel, z_pixel) — orientation tweaks can come
-                // later once we compare to in-game minimap.
+                // output buffer using FF's screen orientation convention,
+                // verified against the open-source ff-game-map dev tool
+                // (mikh-abc/ff-game-map MapWidget.cpp line 113):
+                //
+                //     p.drawRect(imageWidth - y * scale, x * scale, ...)
+                //
+                // That dev tool reads FF saves and renders maps that match
+                // the in-game minimap. Its mapping:
+                //   heights[x][y] → image pixel (W-1-y, x)   // top-left origin
+                //
+                // Translating to our Texture2D buffer (BOTTOM-left origin —
+                // pixels[idx]'s row 0 is the bottom of the saved PNG):
+                //   For texture pixel (px, py):
+                //     hx (heightnoise X) = (H_OUT - 1 - py) scaled to hnW
+                //     hz (heightnoise Z) = (W_OUT - 1 - px) scaled to hnH
+                //
+                // Net effect: world X axis becomes image vertical axis,
+                // world Z axis becomes image horizontal axis (right-to-left).
+                // Result aligns with the in-game minimap orientation.
                 for (int py = 0; py < OUT_H; py++)
                 {
-                    int hz = (int)((float)py / (OUT_H - 1) * (hnH - 1));
+                    // py -> hx (heightnoise X)
+                    int hx = (int)((float)(OUT_H - 1 - py) / (OUT_H - 1) * (hnW - 1));
                     for (int px = 0; px < OUT_W; px++)
                     {
-                        int hx = (int)((float)px / (OUT_W - 1) * (hnW - 1));
+                        // px -> hz (heightnoise Z, inverted)
+                        int hz = (int)((float)(OUT_W - 1 - px) / (OUT_W - 1) * (hnH - 1));
                         float v = heightNoise[hx, hz];
                         float n = (v - hnMin) / hnRange;
                         n = Mathf.Clamp01(n);
@@ -120,11 +134,13 @@ namespace RiversRestored.Patches
 
                     if (fMinX != null && fMinZ != null && fMaxX != null && fMaxZ != null)
                     {
-                        // Heightnoise → output scale factors. Water area
-                        // bounds are in heightnoise cell space (same as
-                        // _generationData.heightNoise indexing).
-                        float sxOut = (float)(OUT_W - 1) / (hnW - 1);
-                        float szOut = (float)(OUT_H - 1) / (hnH - 1);
+                        // World cell → texture pixel mapping per ff-game-map
+                        // dev tool's convention (transpose + Z-flip):
+                        //   pixel_y = (H_OUT - 1) - worldX_scaled
+                        //   pixel_x = (W_OUT - 1) - worldZ_scaled
+                        // Same convention used by the heightmap loop above.
+                        float sxOut = (float)(OUT_H - 1) / (hnW - 1);  // worldX → pixel Y
+                        float szOut = (float)(OUT_W - 1) / (hnH - 1);  // worldZ → pixel X
 
                         foreach (var wa in waterAreas)
                         {
@@ -153,13 +169,13 @@ namespace RiversRestored.Patches
                                 {
                                     int worldZ = minZ + lz;
                                     if (worldZ < 0 || worldZ >= hnH) continue;
-                                    int py = Mathf.Clamp((int)(worldZ * szOut), 0, OUT_H - 1);
+                                    int px = Mathf.Clamp((int)((hnH - 1 - worldZ) * szOut), 0, OUT_W - 1);
                                     for (int lx = 0; lx < mw; lx++)
                                     {
                                         if (!mask[lx, lz]) continue;
                                         int worldX = minX + lx;
                                         if (worldX < 0 || worldX >= hnW) continue;
-                                        int px = Mathf.Clamp((int)(worldX * sxOut), 0, OUT_W - 1);
+                                        int py = Mathf.Clamp((int)((hnW - 1 - worldX) * sxOut), 0, OUT_H - 1);
                                         PaintWaterPixel(pixels, py * OUT_W + px);
                                         waterPainted++;
                                     }
@@ -167,16 +183,15 @@ namespace RiversRestored.Patches
                             }
                             else
                             {
-                                // Bbox fallback (rare — only if mask field
-                                // missing). Keeps coverage so we always see
-                                // SOMETHING for every water area.
-                                int pxMin = Mathf.Clamp((int)(minX * sxOut), 0, OUT_W - 1);
-                                int pxMax = Mathf.Clamp((int)(maxX * sxOut), 0, OUT_W - 1);
-                                int pyMin = Mathf.Clamp((int)(minZ * szOut), 0, OUT_H - 1);
-                                int pyMax = Mathf.Clamp((int)(maxZ * szOut), 0, OUT_H - 1);
-                                for (int py = pyMin; py <= pyMax; py++)
+                                // Bbox fallback. Same axis convention as
+                                // the polygon path above.
+                                int pxLo = Mathf.Clamp((int)((hnH - 1 - maxZ) * szOut), 0, OUT_W - 1);
+                                int pxHi = Mathf.Clamp((int)((hnH - 1 - minZ) * szOut), 0, OUT_W - 1);
+                                int pyLo = Mathf.Clamp((int)((hnW - 1 - maxX) * sxOut), 0, OUT_H - 1);
+                                int pyHi = Mathf.Clamp((int)((hnW - 1 - minX) * sxOut), 0, OUT_H - 1);
+                                for (int py = pyLo; py <= pyHi; py++)
                                 {
-                                    for (int px = pxMin; px <= pxMax; px++)
+                                    for (int px = pxLo; px <= pxHi; px++)
                                     {
                                         PaintWaterPixel(pixels, py * OUT_W + px);
                                         waterPainted++;
@@ -186,13 +201,6 @@ namespace RiversRestored.Patches
                         }
                     }
                 }
-
-                // Orient to match in-game minimap. Heightnoise indexing
-                // produces a buffer that's flipped on both X and Z relative
-                // to FF's screen rendering. Reversing the array flips both
-                // axes in one pass (180° rotation), aligning preview to the
-                // in-game minimap so direction observations are consistent.
-                System.Array.Reverse(pixels);
 
                 // Encode + write
                 var tex = new Texture2D(OUT_W, OUT_H, TextureFormat.RGBA32, false);
