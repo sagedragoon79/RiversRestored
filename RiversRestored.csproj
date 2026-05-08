@@ -61,6 +61,18 @@
       <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\Unity.TextMeshPro.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
 
     <!-- Game assembly -->
     <Reference Include="Assembly-CSharp">
