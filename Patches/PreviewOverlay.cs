@@ -40,6 +40,12 @@ namespace RiversRestored.Patches
         // Sprite/font asset names from KC's UI dump (FF's loaded assets).
         private const string SPRITE_SHADOW = "IMG_BGShadowThickSoft01";
         private const string SPRITE_BORDER = "IMG_BorderSimpleThickDark01B";
+        // Decorative top-corner flourishes — FF dialogs layer two instances
+        // of this sprite mirrored at the top edge. Slice border 11,0,72,0:
+        // 11px left = thin connecting rod; 72px right = ornament that hangs
+        // toward center. Mirroring the right instance puts ornaments on
+        // both inner corners of the top edge.
+        private const string SPRITE_TOP_FANCY = "IMG_BorderTopFancy01B";
         private const string FONT_NAME = "Andada-Bold";  // substring match — covers "Andada-Bold SDF" variants
 
         // Canvas hierarchy refs we hold so update() can toggle visibility
@@ -48,6 +54,8 @@ namespace RiversRestored.Patches
         private RectTransform? _shadowRT;
         private Image? _shadowImg;
         private Image? _borderImg;
+        private Image? _topFancyL;
+        private Image? _topFancyR;
         private RawImage? _previewImage;
         private TextMeshProUGUI? _captionText;
 
@@ -185,8 +193,45 @@ namespace RiversRestored.Patches
                 _borderImg.color = new Color(0.55f, 0.55f, 0.6f, 1f);
             }
 
+            // ── Top-corner decorative flourishes (BorderTopFancy01B, mirrored) ─
+            // Two instances, each spanning roughly half the top edge. FF's
+            // sprite has the ornament at its right edge (72px slice border)
+            // so the LEFT instance's ornament hangs near center-left, and
+            // the RIGHT instance is X-flipped to put its ornament near
+            // center-right. Vertical position: anchored to top edge of
+            // border, hanging down ~26px (slightly less than the 50px
+            // native sprite height to match smaller panel proportions).
+            Sprite? topFancySprite = FindSpriteByName(SPRITE_TOP_FANCY);
+
+            var fancyLGO = new GameObject("TopFancy_L");
+            fancyLGO.transform.SetParent(borderRT, false);
+            var fancyLRT = fancyLGO.AddComponent<RectTransform>();
+            fancyLRT.anchorMin = new Vector2(0f, 1f);
+            fancyLRT.anchorMax = new Vector2(0.5f, 1f);
+            fancyLRT.pivot = new Vector2(0f, 1f);
+            fancyLRT.anchoredPosition = new Vector2(0f, 0f);
+            fancyLRT.sizeDelta = new Vector2(0f, 26f);
+            _topFancyL = fancyLGO.AddComponent<Image>();
+            if (topFancySprite != null) { _topFancyL.sprite = topFancySprite; _topFancyL.type = Image.Type.Sliced; }
+            _topFancyL.color = Color.white;
+
+            var fancyRGO = new GameObject("TopFancy_R");
+            fancyRGO.transform.SetParent(borderRT, false);
+            var fancyRRT = fancyRGO.AddComponent<RectTransform>();
+            fancyRRT.anchorMin = new Vector2(0.5f, 1f);
+            fancyRRT.anchorMax = new Vector2(1f, 1f);
+            fancyRRT.pivot = new Vector2(0f, 1f);
+            fancyRRT.anchoredPosition = new Vector2(0f, 0f);
+            fancyRRT.sizeDelta = new Vector2(0f, 26f);
+            // Mirror via local scale so the ornament hangs on the
+            // INSIDE (left) edge of this right-half instance.
+            fancyRRT.localScale = new Vector3(-1f, 1f, 1f);
+            _topFancyR = fancyRGO.AddComponent<Image>();
+            if (topFancySprite != null) { _topFancyR.sprite = topFancySprite; _topFancyR.type = Image.Type.Sliced; }
+            _topFancyR.color = Color.white;
+
             // Mark resolved status for lazy retry in Update.
-            _spritesResolved = (shadowSprite != null && borderSprite != null);
+            _spritesResolved = (shadowSprite != null && borderSprite != null && topFancySprite != null);
             _fontResolved = (font != null);
 
             // ── Backdrop fill (inside the border, dark + slightly transparent) ─
@@ -268,9 +313,22 @@ namespace RiversRestored.Patches
                     changed = true;
                 }
             }
+            if (_topFancyL != null && _topFancyL.sprite == null)
+            {
+                var s = FindSpriteByName(SPRITE_TOP_FANCY);
+                if (s != null)
+                {
+                    _topFancyL.sprite = s;
+                    _topFancyL.type = Image.Type.Sliced;
+                    if (_topFancyR != null) { _topFancyR.sprite = s; _topFancyR.type = Image.Type.Sliced; }
+                    changed = true;
+                }
+            }
             if (changed)
                 MelonLogger.Msg("[RR][PreviewOverlay] Late-bound FF sprites — panel theme applied.");
-            _spritesResolved = (_shadowImg.sprite != null && _borderImg.sprite != null);
+            _spritesResolved = (_shadowImg.sprite != null
+                                && _borderImg.sprite != null
+                                && (_topFancyL == null || _topFancyL.sprite != null));
         }
 
         /// <summary>Re-attempt font lookup if Start() couldn't find it.</summary>
