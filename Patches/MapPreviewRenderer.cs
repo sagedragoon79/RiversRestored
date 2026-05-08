@@ -58,19 +58,47 @@ namespace RiversRestored.Patches
                 // bottom-left origin; we'll write rows accordingly.
                 var pixels = new Color32[OUT_W * OUT_H];
 
-                // Pre-compute heightnoise min/max for normalized grayscale.
-                // The raw heightnoise often clusters around [0.3, 0.7];
-                // a fixed [0,1] mapping looks washed-out. Stretch to actual range.
-                float hnMin = float.MaxValue, hnMax = float.MinValue;
+                // Pre-compute 5th and 95th percentile heightnoise values via
+                // a 256-bin histogram. Using percentiles instead of raw
+                // min/max gives mid-elevations more visual range — outliers
+                // like the map-edge mountain ridge no longer compress the
+                // useful elevation band.
+                float rawMin = float.MaxValue, rawMax = float.MinValue;
                 for (int x = 0; x < hnW; x++)
                 {
                     for (int z = 0; z < hnH; z++)
                     {
                         float v = heightNoise[x, z];
-                        if (v < hnMin) hnMin = v;
-                        if (v > hnMax) hnMax = v;
+                        if (v < rawMin) rawMin = v;
+                        if (v > rawMax) rawMax = v;
                     }
                 }
+                float rawRange = Mathf.Max(0.0001f, rawMax - rawMin);
+                const int HIST_BINS = 256;
+                int[] hist = new int[HIST_BINS];
+                int totalCells = hnW * hnH;
+                for (int x = 0; x < hnW; x++)
+                {
+                    for (int z = 0; z < hnH; z++)
+                    {
+                        float v = heightNoise[x, z];
+                        int bin = Mathf.Clamp(
+                            (int)((v - rawMin) / rawRange * (HIST_BINS - 1)),
+                            0, HIST_BINS - 1);
+                        hist[bin]++;
+                    }
+                }
+                int target5 = (int)(totalCells * 0.05f);
+                int target95 = (int)(totalCells * 0.95f);
+                int p5Bin = 0, p95Bin = HIST_BINS - 1, accum = 0;
+                for (int b = 0; b < HIST_BINS; b++)
+                {
+                    accum += hist[b];
+                    if (accum >= target5 && p5Bin == 0) p5Bin = b;
+                    if (accum >= target95) { p95Bin = b; break; }
+                }
+                float hnMin = rawMin + (p5Bin / (float)(HIST_BINS - 1)) * rawRange;
+                float hnMax = rawMin + (p95Bin / (float)(HIST_BINS - 1)) * rawRange;
                 float hnRange = Mathf.Max(0.0001f, hnMax - hnMin);
 
                 // Heightmap grayscale base — sample heightnoise into the
@@ -92,6 +120,26 @@ namespace RiversRestored.Patches
                 //   pixel(px, py) shows heightnoise[hx, hz] where:
                 //     hx = (H_OUT - 1 - py) scaled to hnW
                 //     hz = (W_OUT - 1 - px) scaled to hnH
+                // Heightmap render: percentile-normalized elevation → color
+                // ramp (green low → tan mid → brown high → white peaks),
+                // multiplied by hillshade for 3D feel.
+                //
+                // Hillshade: virtual sun at azimuth 315° (NW), altitude 45°.
+                // For each cell, compute the surface normal from neighbor
+                // heightnoise gradients, dot with light direction, multiply
+                // base color by the result. Slope exaggeration is needed
+                // because heightnoise units are 0..1 (very flat compared to
+                // cell width); without it, hillshade is invisible.
+                const float SLOPE_EXAGGERATE = 80f;  // empirical — readable shadows on typical seeds
+                // Precompute light direction (NW, 45° altitude). Normalized.
+                // World convention: x = east-west, z = north-south.
+                float lightAlt = 45f * Mathf.Deg2Rad;
+                float lightAz = 315f * Mathf.Deg2Rad;
+                Vector3 light = new Vector3(
+                    Mathf.Sin(lightAz) * Mathf.Cos(lightAlt),
+                    Mathf.Sin(lightAlt),
+                    Mathf.Cos(lightAz) * Mathf.Cos(lightAlt)).normalized;
+
                 int hxBorder = hnW / 10;
                 int hzBorder = hnH / 10;
                 for (int py = 0; py < OUT_H; py++)
@@ -101,18 +149,44 @@ namespace RiversRestored.Patches
                     {
                         int hz = (int)((float)(OUT_W - 1 - px) / (OUT_W - 1) * (hnH - 1));
                         float v = heightNoise[hx, hz];
-                        float n = (v - hnMin) / hnRange;
-                        n = Mathf.Clamp01(n);
-                        // Inverted: high terrain → dark, low terrain → light.
-                        float devV = 1f - n;
-                        // Border clamp: cells in the outer 10% that would
-                        // render dark get pushed up to 0.5 gray so map edges
-                        // don't go pure black. Per dev tool's heuristic.
+                        float n = Mathf.Clamp01((v - hnMin) / hnRange);
+
+                        // Hillshade — sample neighbors with edge clamp.
+                        int hxL = Mathf.Max(0, hx - 1);
+                        int hxR = Mathf.Min(hnW - 1, hx + 1);
+                        int hzL = Mathf.Max(0, hz - 1);
+                        int hzR = Mathf.Min(hnH - 1, hz + 1);
+                        float dhx = (heightNoise[hxR, hz] - heightNoise[hxL, hz]) * 0.5f * SLOPE_EXAGGERATE;
+                        float dhz = (heightNoise[hx, hzR] - heightNoise[hx, hzL]) * 0.5f * SLOPE_EXAGGERATE;
+                        Vector3 normal = new Vector3(-dhx, 1f, -dhz).normalized;
+                        float lambert = Mathf.Max(0.35f, Vector3.Dot(normal, light));
+                        // Lambert is now in [0.35, 1.0] — 0.35 floor preserves
+                        // detail in self-shadowed areas.
+
+                        // Color ramp by elevation. Linear interpolation
+                        // between control colors at fixed elevation stops.
+                        Color32 baseColor = ElevationToColor(n);
+
+                        // Border clamp: dark/saturated colors near the map
+                        // edge wash out the rest of the scene; lift them
+                        // toward neutral gray to keep edges readable without
+                        // dominating.
                         bool inBorder = hx < hxBorder || hx > hnW - hxBorder
                                      || hz < hzBorder || hz > hnH - hzBorder;
-                        if (devV < 0.5f && inBorder) devV = 0.5f;
-                        byte b = (byte)(devV * 255f);
-                        pixels[py * OUT_W + px] = new Color32(b, b, b, 255);
+                        if (inBorder)
+                        {
+                            // Blend toward mid-gray (128) by 50% in border.
+                            baseColor = new Color32(
+                                (byte)((baseColor.r + 128) / 2),
+                                (byte)((baseColor.g + 128) / 2),
+                                (byte)((baseColor.b + 128) / 2),
+                                255);
+                        }
+
+                        byte r = (byte)(baseColor.r * lambert);
+                        byte g = (byte)(baseColor.g * lambert);
+                        byte b = (byte)(baseColor.b * lambert);
+                        pixels[py * OUT_W + px] = new Color32(r, g, b, 255);
                     }
                 }
 
@@ -236,7 +310,49 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Blend a blue water tint over the existing grayscale base
+        /// <summary>Map normalized elevation [0..1] to a topographic color.
+        /// Palette: dark green (low/marsh) → light green (farmland) → tan
+        /// (rolling) → brown (hills) → near-white (peaks). Linear lerp
+        /// between fixed control colors at fixed elevation stops.</summary>
+        private static Color32 ElevationToColor(float n)
+        {
+            // Control colors (RGB) at elevation stops [0, 0.25, 0.5, 0.75, 1].
+            // Tweaked for visual contrast against the sky-blue water and
+            // readable hillshade overlay. Avoids pure black/white at extremes
+            // so multiplying by lambert never goes flat.
+            // 0.00: dark olive  — flat marsh / very low ground
+            // 0.25: bright green — farmland / lowland
+            // 0.50: tan          — rolling hills / midland
+            // 0.75: brown        — mountainsides / highland
+            // 1.00: near-white   — peaks / mountain tops
+            if (n <= 0.25f)
+                return LerpColor(new Color32(80, 100, 60, 255),
+                                 new Color32(160, 200, 110, 255),
+                                 n * 4f);
+            if (n <= 0.50f)
+                return LerpColor(new Color32(160, 200, 110, 255),
+                                 new Color32(210, 200, 140, 255),
+                                 (n - 0.25f) * 4f);
+            if (n <= 0.75f)
+                return LerpColor(new Color32(210, 200, 140, 255),
+                                 new Color32(150, 110, 80, 255),
+                                 (n - 0.50f) * 4f);
+            return LerpColor(new Color32(150, 110, 80, 255),
+                             new Color32(245, 240, 235, 255),
+                             (n - 0.75f) * 4f);
+        }
+
+        private static Color32 LerpColor(Color32 a, Color32 b, float t)
+        {
+            t = Mathf.Clamp01(t);
+            return new Color32(
+                (byte)(a.r + (b.r - a.r) * t),
+                (byte)(a.g + (b.g - a.g) * t),
+                (byte)(a.b + (b.b - a.b) * t),
+                255);
+        }
+
+        /// <summary>Blend a blue water tint over the existing colored base
         /// at the given pixel index. Color matches the ff-game-map dev tool's
         /// water tone: RGB(128, 194, 255) — light sky blue. 80% blue, 20%
         /// retained heightmap so water still hints at relief underneath.</summary>
