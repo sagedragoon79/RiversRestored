@@ -39,13 +39,12 @@ namespace RiversRestored.Patches
 
         // Sprite/font asset names from KC's UI dump (FF's loaded assets).
         private const string SPRITE_SHADOW = "IMG_BGShadowThickSoft01";
-        private const string SPRITE_BORDER = "IMG_BorderSimpleThickDark01B";
-        // Decorative top-corner flourishes — FF dialogs layer two instances
-        // of this sprite mirrored at the top edge. Slice border 11,0,72,0:
-        // 11px left = thin connecting rod; 72px right = ornament that hangs
-        // toward center. Mirroring the right instance puts ornaments on
-        // both inner corners of the top edge.
-        private const string SPRITE_TOP_FANCY = "IMG_BorderTopFancy01B";
+        // BTN_Border02_UP has slice border 23,18,23,18 — all four edges
+        // defined, so the sprite ships with proper corner ornaments baked
+        // into its 9-slice corner regions. Same sprite FF uses for the
+        // main menu Continue/Load/Exit buttons. No separate corner-ornament
+        // overlay needed.
+        private const string SPRITE_BORDER = "BTN_Border02_UP";
         private const string FONT_NAME = "Andada-Bold";  // substring match — covers "Andada-Bold SDF" variants
 
         // Canvas hierarchy refs we hold so update() can toggle visibility
@@ -54,10 +53,6 @@ namespace RiversRestored.Patches
         private RectTransform? _shadowRT;
         private Image? _shadowImg;
         private Image? _borderImg;
-        private Image? _topFancyL;
-        private Image? _topFancyR;
-        private Image? _botFancyL;
-        private Image? _botFancyR;
         private RawImage? _previewImage;
         private TextMeshProUGUI? _captionText;
 
@@ -195,55 +190,13 @@ namespace RiversRestored.Patches
                 _borderImg.color = new Color(0.55f, 0.55f, 0.6f, 1f);
             }
 
-            // ── Four corner flourishes (BorderTopFancy01B, narrow rects) ─
-            // The sprite's slice is 11,0,72,0 → 11px left + middle stretch
-            // + 72px right ornament. By making each rect just wide enough
-            // to render the slice corners (~95px) without much middle
-            // stretch, we get just the corner ornament with a minimal
-            // connecting line. Each of the 4 panel corners gets its own
-            // narrow rect, with X/Y flip combos to put the ornament
-            // pointing OUTWARD on each corner.
-            //
-            // Flip rules:
-            //   X-flip (scale.x = -1): ornament at LEFT side of rect (use for L corners)
-            //   no X-flip:             ornament at RIGHT side of rect (use for R corners)
-            //   Y-flip (scale.y = -1): ornament hangs DOWN (use for TOP corners)
-            //   no Y-flip:             ornament hangs UP (use for BOTTOM corners)
-            //
-            // Vertical position: each corner's rect overlaps the panel
-            // edge by FANCY_OVERFLOW so the ornament drapes onto the
-            // border visibly.
-            Sprite? topFancySprite = FindSpriteByName(SPRITE_TOP_FANCY);
-            const int FANCY_W = 95;   // wide enough for slice corners (11+72=83) plus minimal middle
-            const int FANCY_H = 50;
-            const int FANCY_OVERFLOW = 8;
-
-            _topFancyL = MakeCornerOrnament(borderRT, "TopFancy_L",
-                topFancySprite, FANCY_W, FANCY_H,
-                anchor: new Vector2(0f, 1f),
-                offset: new Vector2(0f, FANCY_OVERFLOW),
-                xFlip: true, yFlip: true);
-
-            _topFancyR = MakeCornerOrnament(borderRT, "TopFancy_R",
-                topFancySprite, FANCY_W, FANCY_H,
-                anchor: new Vector2(1f, 1f),
-                offset: new Vector2(0f, FANCY_OVERFLOW),
-                xFlip: false, yFlip: true);
-
-            _botFancyL = MakeCornerOrnament(borderRT, "BotFancy_L",
-                topFancySprite, FANCY_W, FANCY_H,
-                anchor: new Vector2(0f, 0f),
-                offset: new Vector2(0f, -FANCY_OVERFLOW),
-                xFlip: true, yFlip: false);
-
-            _botFancyR = MakeCornerOrnament(borderRT, "BotFancy_R",
-                topFancySprite, FANCY_W, FANCY_H,
-                anchor: new Vector2(1f, 0f),
-                offset: new Vector2(0f, -FANCY_OVERFLOW),
-                xFlip: false, yFlip: false);
+            // No separate corner-ornament overlays needed — BTN_Border02_UP
+            // has its corners baked into the sliced sprite (23x18 corner
+            // regions). The MakeCornerOrnament helper is left in place
+            // below for potential future use, but no longer called.
 
             // Mark resolved status for lazy retry in Update.
-            _spritesResolved = (shadowSprite != null && borderSprite != null && topFancySprite != null);
+            _spritesResolved = (shadowSprite != null && borderSprite != null);
             _fontResolved = (font != null);
 
             // ── Backdrop fill (inside the border, dark + slightly transparent) ─
@@ -354,25 +307,9 @@ namespace RiversRestored.Patches
                     changed = true;
                 }
             }
-            if (_topFancyL != null && _topFancyL.sprite == null)
-            {
-                var s = FindSpriteByName(SPRITE_TOP_FANCY);
-                if (s != null)
-                {
-                    foreach (var img in new[] { _topFancyL, _topFancyR, _botFancyL, _botFancyR })
-                    {
-                        if (img == null) continue;
-                        img.sprite = s;
-                        img.type = Image.Type.Sliced;
-                    }
-                    changed = true;
-                }
-            }
             if (changed)
                 MelonLogger.Msg("[RR][PreviewOverlay] Late-bound FF sprites — panel theme applied.");
-            _spritesResolved = (_shadowImg.sprite != null
-                                && _borderImg.sprite != null
-                                && (_topFancyL == null || _topFancyL.sprite != null));
+            _spritesResolved = (_shadowImg.sprite != null && _borderImg.sprite != null);
         }
 
         /// <summary>Re-attempt font lookup if Start() couldn't find it.</summary>
