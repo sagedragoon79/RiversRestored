@@ -276,6 +276,13 @@ namespace RiversRestored
         /// observational.</summary>
         public static MelonPreferences_Entry<bool>? EnableMapPreviewRender { get; private set; }
 
+        /// <summary>When true, displays the most-recently-rendered map
+        /// preview as an in-game overlay panel (right side of screen, mid-
+        /// vertical). Toggleable mid-session via F8 hotkey too. Requires
+        /// <see cref="EnableMapPreviewRender"/> to also be ON so a preview
+        /// actually exists to display.</summary>
+        public static MelonPreferences_Entry<bool>? ShowPreviewOverlay { get; private set; }
+
         // ── Preset value table ─────────────────────────────────────────────
         /// <summary>Bundle of preset values that override the granular cfg
         /// entries when <see cref="RiverPreset"/> is anything other than
@@ -511,18 +518,14 @@ namespace RiversRestored
         private static RiverPresetEntries CreatePresetEntries(string presetName, RiverPresetValues defaults)
         {
             // CreateCategory returns the existing category if the name is
-            // already registered, so re-init is safe. SetFilePath is REQUIRED
-            // for the category to persist to disk — without it, entries live
-            // only in memory and any value changes get lost on game exit.
-            // Bind to the same MelonPreferences.cfg the main RiversRestored
-            // category uses, so all RR settings end up in one file.
-            var cat = MelonPreferences.CreateCategory($"RiversRestored.{presetName}");
-            try { cat.SetFilePath("UserData/MelonPreferences.cfg"); }
-            catch (System.Exception ex)
-            {
-                Log.Warning($"[RR] SetFilePath failed for preset {presetName}: {ex.Message}. " +
-                            $"Values will not persist across launches.");
-            }
+            // already registered, so re-init is safe. Category name uses
+            // underscore, not period, because MelonLoader 0.7.0 treats
+            // period-named categories as not-default-file-bound (entries
+            // live in memory, never persist to MelonPreferences.cfg).
+            // SetFilePath would normally be the fix but its signature in
+            // 0.7.0 throws NRE on us. Underscore-named categories follow
+            // the default file-binding convention and persist correctly.
+            var cat = MelonPreferences.CreateCategory($"RiversRestored_{presetName}");
             var prefix = $"[{presetName}] ";
 
             return new RiverPresetEntries
@@ -716,8 +719,16 @@ namespace RiversRestored
                              "preview image of the heightmap + rivers + lakes to " +
                              "UserData/RiversRestored/Previews/<seed>_<timestamp>.png. " +
                              "Useful for verifying RR's gen output without launching " +
-                             "into a settlement. Stage 2 of the in-game previewer feature. " +
-                             "Default OFF — opt-in until rendering is dialed in.");
+                             "into a settlement. Default OFF — opt-in until " +
+                             "rendering is dialed in.");
+
+            ShowPreviewOverlay = cat.CreateEntry("ShowPreviewOverlay", false,
+                display_name: "[Beta] Show Preview Overlay In-Game",
+                description: "When ON: the most-recently-rendered map preview " +
+                             "is displayed as an overlay panel on the right side " +
+                             "of the screen during play. Press F8 in-game to " +
+                             "toggle visibility. Requires Render Map Previews " +
+                             "to be ON so a preview exists to display.");
 
             NumRivers = cat.CreateEntry("NumRivers", 4,
                 display_name: "Number of Rivers",
@@ -935,6 +946,21 @@ namespace RiversRestored
 
                 // Optional: register with Keep Clarity's settings panel if installed.
                 KeepClarityIntegration.TryRegisterAll();
+
+                // Spawn the in-game preview overlay GameObject. Persists for
+                // the entire process via DontDestroyOnLoad so it survives
+                // scene changes (main menu ↔ in-game). OnGUI is gated by
+                // ShowPreviewOverlay pref + a non-null LatestPreview.
+                try
+                {
+                    var go = new UnityEngine.GameObject("RR_PreviewOverlay");
+                    go.AddComponent<RiversRestored.Patches.PreviewOverlay>();
+                    UnityEngine.Object.DontDestroyOnLoad(go);
+                }
+                catch (System.Exception ex)
+                {
+                    Log.Warning($"[RR] Failed to spawn preview overlay: {ex.Message}");
+                }
             }
             catch (System.Exception ex)
             {

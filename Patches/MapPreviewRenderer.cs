@@ -280,34 +280,181 @@ namespace RiversRestored.Patches
                     }
                 }
 
+                // ── Resource overlay: minerals (iron/gold/clay/coal/sand/stone) ──
+                // Reads MineralManager.Instance at render time. May be null
+                // or empty if minerals haven't spawned yet (Stage 70+ resource
+                // stage). When that's the case, the overlay is silently
+                // skipped — log line below confirms what's available.
+                int mineralsRendered = DrawMineralOverlay(pixels, hnW, hnH);
+                Log($"Minerals overlay: {mineralsRendered} markers drawn.");
+
                 // Encode + write
                 var tex = new Texture2D(OUT_W, OUT_H, TextureFormat.RGBA32, false);
                 tex.SetPixels32(pixels);
                 tex.Apply();
                 byte[] png = ImageConversion.EncodeToPNG(tex);
-                UnityEngine.Object.DestroyImmediate(tex);
+
+                // Hand the texture to the in-game overlay (replaces the prior
+                // one if any). DontDestroy on the overlay GameObject keeps
+                // the texture alive across scene changes. We deliberately
+                // DON'T DestroyImmediate here because PreviewOverlay needs
+                // it for OnGUI rendering. Old textures are released below.
+                if (PreviewOverlay.LatestPreview != null
+                    && PreviewOverlay.LatestPreview != tex)
+                {
+                    UnityEngine.Object.Destroy(PreviewOverlay.LatestPreview);
+                }
+                PreviewOverlay.LatestPreview = tex;
 
                 string outDir = Path.Combine("UserData", "RiversRestored", "Previews");
                 Directory.CreateDirectory(outDir);
 
-                // Filename includes seed (if available) + timestamp. Seed
-                // first so dir-listing groups by seed nicely.
+                // Filename embeds the gen metadata so screenshots are
+                // self-describing without needing a separate text file or
+                // font rendering on the image. Format:
+                //   <seed>_<preset>_r<riverCount>_w<waterPct>_<timestamp>.png
+                // Example: "5CB1426566A_IdyllicValley_r4_w12pct_20260507_195851.png"
                 string seedStr = TryGetSeedString(tg);
                 string ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                string filename = string.IsNullOrEmpty(seedStr)
-                    ? $"map_{ts}.png"
-                    : $"{seedStr}_{ts}.png";
-                string outPath = Path.Combine(outDir, filename);
+                string presetStr = (RiversRestoredMod.RiverPreset?.Value ?? RiverPresetMode.IdyllicValley).ToString();
+                int riverCount = CountRivers(tg);
+                int waterPct = totalCells > 0
+                    ? (int)Math.Round(100.0 * waterPainted / (OUT_W * OUT_H))
+                    : 0;
+                string baseName = string.IsNullOrEmpty(seedStr)
+                    ? $"map_{presetStr}_r{riverCount}_w{waterPct}pct_{ts}"
+                    : $"{seedStr}_{presetStr}_r{riverCount}_w{waterPct}pct_{ts}";
+                // Sanitize — strip anything that's not safe for filenames
+                foreach (char c in Path.GetInvalidFileNameChars())
+                    baseName = baseName.Replace(c, '_');
+                string outPath = Path.Combine(outDir, baseName + ".png");
 
                 File.WriteAllBytes(outPath, png);
                 RenderedThisGen = true;
+
+                // Set caption for the overlay panel. Compact one-liner with
+                // the most useful at-a-glance gen metadata.
+                PreviewOverlay.LatestCaption =
+                    $"Seed {(string.IsNullOrEmpty(seedStr) ? "?" : seedStr)} · " +
+                    $"{presetStr} · {riverCount} river(s) · {waterPct}% water";
+
                 Log($"Wrote preview ({OUT_W}x{OUT_H}, hn={hnW}x{hnH}, " +
-                    $"waterAreas={waterAreaCount}, painted={waterPainted}) → {outPath}");
+                    $"waterAreas={waterAreaCount}, painted={waterPainted}, " +
+                    $"minerals={mineralsRendered}) → {outPath}");
             }
             catch (Exception ex)
             {
                 Log($"Render failed ({source}): {ex.Message}");
             }
+        }
+
+        /// <summary>Find the live MineralManager (if present at render time)
+        /// and rasterize each mineral deposit as a small colored marker on
+        /// the preview. Mineral colors mirror the ff-game-map dev tool palette
+        /// (DataDefines.cpp::mineralColor). Returns the number of markers
+        /// painted; zero usually means minerals haven't spawned yet (resource
+        /// stage runs after our render hook).</summary>
+        private static int DrawMineralOverlay(Color32[] pixels, int hnW, int hnH)
+        {
+            try
+            {
+                Type? mmType = AccessTools.TypeByName("MineralManager")
+                                ?? AccessTools.TypeByName("Mineral.MineralManager");
+                if (mmType == null) return 0;
+
+                var instance = UnityEngine.Object.FindObjectOfType(mmType);
+                if (instance == null) return 0;
+
+                IList? minerals = null;
+                foreach (var name in new[] { "minerals", "Minerals", "_minerals", "mineralList", "allMinerals" })
+                {
+                    var f = mmType.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (f != null) { minerals = f.GetValue(instance) as IList; if (minerals != null) break; }
+                    var p = mmType.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (p != null) { minerals = p.GetValue(instance) as IList; if (minerals != null) break; }
+                }
+                if (minerals == null || minerals.Count == 0) return 0;
+
+                float sxOut = (float)(OUT_H - 1) / (hnW - 1);
+                float szOut = (float)(OUT_W - 1) / (hnH - 1);
+
+                int painted = 0;
+                foreach (var m in minerals)
+                {
+                    if (m == null) continue;
+                    Type mt = m.GetType();
+
+                    Vector3 pos = Vector3.zero;
+                    bool gotPos = false;
+                    var tProp = mt.GetProperty("transform", BindingFlags.Public | BindingFlags.Instance);
+                    if (tProp != null)
+                    {
+                        var tr = tProp.GetValue(m) as Transform;
+                        if (tr != null) { pos = tr.position; gotPos = true; }
+                    }
+                    if (!gotPos)
+                    {
+                        var pField = mt.GetField("position", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (pField != null && pField.GetValue(m) is Vector3 v3) { pos = v3; gotPos = true; }
+                    }
+                    if (!gotPos) continue;
+
+                    string typeStr = "";
+                    foreach (var n in new[] { "type", "mineralType", "Type" })
+                    {
+                        var f = mt.GetField(n, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (f != null) { var v = f.GetValue(m); if (v != null) { typeStr = v.ToString(); break; } }
+                        var p = mt.GetProperty(n, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (p != null) { var v = p.GetValue(m); if (v != null) { typeStr = v.ToString(); break; } }
+                    }
+                    if (string.IsNullOrEmpty(typeStr)) typeStr = mt.Name;
+
+                    Color32 markerColor = MineralTypeToColor(typeStr);
+
+                    // World pos (x, z) → heightnoise cell coords. FF cell
+                    // size is 5m typically — divide world meters by 5 to
+                    // get cell index. If markers land in obviously wrong
+                    // spots, we'll need to discover cellSize properly.
+                    const float CELL_SIZE = 5f;
+                    float worldX = pos.x / CELL_SIZE;
+                    float worldZ = pos.z / CELL_SIZE;
+                    if (worldX < 0 || worldX >= hnW || worldZ < 0 || worldZ >= hnH) continue;
+
+                    int py = Mathf.Clamp((int)((hnW - 1 - worldX) * sxOut), 0, OUT_H - 1);
+                    int px = Mathf.Clamp((int)((hnH - 1 - worldZ) * szOut), 0, OUT_W - 1);
+
+                    // 3×3 dot for visibility.
+                    for (int dy = -1; dy <= 1; dy++)
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            int xx = px + dx, yy = py + dy;
+                            if (xx < 0 || xx >= OUT_W || yy < 0 || yy >= OUT_H) continue;
+                            pixels[yy * OUT_W + xx] = markerColor;
+                        }
+                    painted++;
+                }
+                return painted;
+            }
+            catch (Exception ex)
+            {
+                Log($"DrawMineralOverlay failed: {ex.Message}");
+                return 0;
+            }
+        }
+
+        /// <summary>Mineral-type-name → color, matching ff-game-map dev tool
+        /// palette. Substring match handles FF reporting type as enum value,
+        /// qualified string, or class name.</summary>
+        private static Color32 MineralTypeToColor(string typeStr)
+        {
+            typeStr = typeStr.ToLowerInvariant();
+            if (typeStr.Contains("iron"))   return new Color32(140, 140, 140, 255);
+            if (typeStr.Contains("gold"))   return new Color32(127, 127, 0, 255);
+            if (typeStr.Contains("coal"))   return new Color32(80, 80, 80, 255);
+            if (typeStr.Contains("clay"))   return new Color32(127, 30, 30, 255);
+            if (typeStr.Contains("sand"))   return new Color32(255, 255, 170, 255);
+            if (typeStr.Contains("stone"))  return new Color32(200, 200, 200, 255);
+            return new Color32(255, 0, 255, 255);  // magenta = unrecognized
         }
 
         /// <summary>Map normalized elevation [0..1] to a topographic color.
@@ -365,6 +512,22 @@ namespace RiversRestored.Patches
                 (byte)(prev.g * (1f - blend) + 194 * blend),
                 (byte)(prev.b * (1f - blend) + 255 * blend),
                 255);
+        }
+
+        /// <summary>Best-effort: count the rivers in <c>_generationData.rivers</c>.
+        /// Returns 0 if the list is missing or empty.</summary>
+        private static int CountRivers(TerrainGenerator tg)
+        {
+            try
+            {
+                var gd = AccessTools.Field(typeof(TerrainGenerator), "_generationData")?.GetValue(tg);
+                if (gd == null) return 0;
+                var rField = gd.GetType().GetField("rivers",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var rivers = rField?.GetValue(gd) as IList;
+                return rivers?.Count ?? 0;
+            }
+            catch { return 0; }
         }
 
         /// <summary>Best-effort: pull a seed string off the generator for the

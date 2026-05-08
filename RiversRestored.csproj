@@ -49,6 +49,18 @@
       <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>G:\SteamLibrary\steamapps\common\Farthest Frontier\Farthest Frontier (Mono)\Farthest Frontier_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
 
     <!-- Game assembly -->
     <Reference Include="Assembly-CSharp">

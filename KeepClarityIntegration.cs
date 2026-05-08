@@ -134,9 +134,14 @@ namespace RiversRestored
                 NewMeta("[Beta] Render Map Previews to PNG",
                     "After each gen, RR writes a top-down preview PNG to " +
                     "UserData/RiversRestored/Previews/. Useful for verifying " +
-                    "RR's gen output without launching into a settlement. " +
-                    "Stage 2 of the in-game previewer feature.",
+                    "RR's gen output without launching into a settlement.",
                     order: 50, visibleWhen: on));
+            Reg("Master", RiversRestoredMod.ShowPreviewOverlay,
+                NewMeta("[Beta] Show Preview Overlay In-Game",
+                    "Display the most-recently-rendered preview as a panel on " +
+                    "the right side of the screen during play. F8 toggles " +
+                    "visibility in-game. Requires Render Map Previews to be ON.",
+                    order: 55, visibleWhen: on));
 
             // === Flow Direction === — v1.3.0 directional bias.
             Reg("Flow Direction", RiversRestoredMod.RiverFlowBias,
