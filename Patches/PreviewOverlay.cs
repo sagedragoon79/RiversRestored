@@ -29,10 +29,13 @@ namespace RiversRestored.Patches
         public static string LatestCaption = "";
 
         // Panel layout (anchored to right edge, vertically centered).
-        private const int PANEL_W = 500;
-        private const int PANEL_H = 500;
-        private const int CAPTION_H = 28;
-        private const int MARGIN = 20;
+        // Sized to fit between FF's New Game settings dialog and the
+        // right edge of screen at common 1920×1080 / 1920×900 layouts
+        // without overlapping the settings panel.
+        private const int PANEL_W = 360;
+        private const int PANEL_H = 360;
+        private const int CAPTION_H = 24;
+        private const int MARGIN = 16;
 
         private static GUIStyle? _captionStyle;
 
