@@ -187,6 +187,13 @@ namespace RiversRestored.Patches
                     }
                 }
 
+                // Orient to match in-game minimap. Heightnoise indexing
+                // produces a buffer that's flipped on both X and Z relative
+                // to FF's screen rendering. Reversing the array flips both
+                // axes in one pass (180° rotation), aligning preview to the
+                // in-game minimap so direction observations are consistent.
+                System.Array.Reverse(pixels);
+
                 // Encode + write
                 var tex = new Texture2D(OUT_W, OUT_H, TextureFormat.RGBA32, false);
                 tex.SetPixels32(pixels);
