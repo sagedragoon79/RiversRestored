@@ -1,37 +1,49 @@
 using System;
+using System.Collections;
 using System.Reflection;
 using HarmonyLib;
 using MelonLoader;
 using TerrainGen;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace RiversRestored.Patches
 {
     /// <summary>
-    /// On-demand preview-gen trigger. Bridges the gap between RR's panel
-    /// and FF's gen pipeline — when the user clicks the panel's "PREVIEW"
-    /// button, this finds a TerrainGenerator instance and runs the minimum
-    /// gen-stage sequence to populate <c>_generationData.heightNoise</c>
-    /// and <c>_generationData.waterAreas</c>, then triggers our renderer.
+    /// On-demand preview-gen trigger. Adopts Pangu's approach:
     ///
-    /// V1 strategy: use whatever <see cref="TerrainGenerator"/> is already
-    /// in the scene (live or Pangu's worker). If nothing is found, log
-    /// and bail. This avoids the complexity of spawning our own worker
-    /// (Pangu's pattern needs scene-template loading and a coroutine
-    /// dispatcher) — a future iteration can add a true RR-spawned worker
-    /// for full standalone behavior.
+    /// FF's "Map" scene contains a properly-configured prefab with the
+    /// TerrainGenerator and TerrainGeneratorController. AddComponent on a
+    /// fresh GameObject doesn't carry over the Editor-configured settings
+    /// (mapSettings, baseSettings, asset references etc.), so worker gen
+    /// against such an instance produces NaN heightnoise. The fix is to
+    /// load FF's "Map" scene additively and use the TerrainGenerator that
+    /// scene already has — the same trick Pangu uses internally.
+    ///
+    /// V3 strategy:
+    ///   1. Try cached/scene-search for any TG already present (Pangu, etc.)
+    ///   2. If none, load "Map" scene additively
+    ///   3. Find the TG in the loaded scene
+    ///   4. Run gen stage sequence on it
+    ///   5. Render via MapPreviewRenderer
+    ///   6. (Optionally) unload Map scene to free resources
+    ///
+    /// Async work runs on a coroutine hosted by PreviewOverlay.
     /// </summary>
     internal static class PreviewGenWorker
     {
-        // Throttle re-clicks while a preview is mid-flight.
         private static bool _busy = false;
+        // Tracks whether RR initiated the Map scene load (vs. it was
+        // already loaded by FF/Pangu). Reserved for future use — V3
+        // doesn't unload the scene after each preview, but if we do
+        // later, this flag tells us whether unloading is appropriate.
+        #pragma warning disable CS0414
+        private static bool _mapSceneLoadedByUs = false;
+        #pragma warning restore CS0414
 
-        // Lazily-spawned worker GameObject. Used only when no live
-        // TerrainGenerator exists in the scene (e.g. user is on the New
-        // Game screen without Pangu running). Persists across previews
-        // so we don't pay the AddComponent cost per click.
-        private static GameObject? _workerGO;
-
+        /// <summary>Entry point — invoked from the PREVIEW button click.
+        /// Kicks off a coroutine that handles the async scene load and
+        /// gen stage sequence.</summary>
         public static void TriggerPreview()
         {
             if (_busy)
@@ -39,27 +51,46 @@ namespace RiversRestored.Patches
                 Log("Already running — ignoring click.");
                 return;
             }
+
+            // Find a MonoBehaviour to host the coroutine. The PreviewOverlay
+            // is already DontDestroyOnLoad and present whenever we'd want
+            // to trigger a preview.
+            var host = UnityEngine.Object.FindObjectOfType<PreviewOverlay>();
+            if (host == null)
+            {
+                Log("No PreviewOverlay host MonoBehaviour found — can't start coroutine.");
+                return;
+            }
+
             _busy = true;
+            host.StartCoroutine(PreviewCoroutine());
+        }
+
+        private static IEnumerator PreviewCoroutine()
+        {
             try
             {
+                // ── Step 1: try existing TG ──────────────────────────
                 var tg = FindUsableTerrainGenerator();
-                if (tg == null)
+                if (tg != null)
                 {
-                    tg = SpawnWorkerGenerator();
-                    if (tg == null)
-                    {
-                        Log("Could not spawn a TerrainGenerator worker. " +
-                            "Preview unavailable. Try enabling Pangu's 'Preview Map Seed'.");
-                        return;
-                    }
-                    Log($"Spawned worker TerrainGenerator on '{tg.gameObject.name}'.");
+                    Log($"Using existing TerrainGenerator on '{tg.gameObject.name}'.");
                 }
                 else
                 {
-                    Log($"Using existing TerrainGenerator on '{tg.gameObject.name}' for preview.");
+                    // ── Step 2: load FF's "Map" scene additively ──────
+                    Log("No existing TerrainGenerator — loading 'Map' scene additively...");
+                    yield return LoadMapScene();
+                    tg = FindTerrainGeneratorInMapScene();
+                    if (tg == null)
+                    {
+                        Log("Map scene loaded but no TerrainGenerator found in its roots.");
+                        yield break;
+                    }
+                    Log($"Loaded 'Map' scene; using its TerrainGenerator on '{tg.gameObject.name}'.");
                 }
 
-                // Read seed from FF's seed input field if available.
+                // ── Step 3: prepare seed and run gen pipeline ─────────
                 string seed = TryReadSeedFromUI();
                 if (!string.IsNullOrEmpty(seed))
                 {
@@ -67,17 +98,11 @@ namespace RiversRestored.Patches
                     TrySetSeedOnGenerator(tg, seed);
                 }
 
-                // Reset our renderer's per-gen flag so it'll fire again.
+                // Reset our renderer's per-gen flag.
                 MapPreviewRenderer.RenderedThisGen = false;
 
-                // Invoke the minimum sequence: Stage 38 (river paths) +
-                // Stage 50 (water). Stages 1-3 (heightnoise) etc. are
-                // assumed already-run by FF's PreGenerateShared chain on
-                // the live TerrainGenerator. If heightnoise turns out null,
-                // we'd need to invoke earlier stages too.
                 InvokeStageIfPresent(tg, "PreGenerateShared");
                 InvokeStageIfPresent(tg, "PreGenerate");
-                // The full pipeline:
                 foreach (var s in new[] {
                     "GenerateAsync_Setup_Stage1",
                     "GenerateAsync_Voronoi_Stage2",
@@ -94,18 +119,16 @@ namespace RiversRestored.Patches
                     InvokeStageIfPresent(tg, s);
                 }
 
-                // Diagnostic state dump so we can see what initialization
-                // worked vs failed. Log-only; doesn't affect rendering.
                 DumpGeneratorState(tg);
 
-                // Render the result — TryRender is gated by EnableMapPreviewRender
-                // so it'll only fire if the user has the pref on.
                 MapPreviewRenderer.TryRender(tg, "PreviewButton");
                 Log("Preview gen complete.");
-            }
-            catch (Exception ex)
-            {
-                Log($"Preview gen failed: {ex.Message}");
+
+                // Optional: unload Map scene to free resources. Skipped for
+                // V3 — keeping it loaded means subsequent previews don't pay
+                // the load cost again. Trade-off: extra memory while the
+                // user is on the New Game screen.
+                // if (_mapSceneLoadedByUs) yield return UnloadMapScene();
             }
             finally
             {
@@ -113,58 +136,79 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Find any TerrainGenerator instance in the scene.
-        /// Could be the live one, Pangu's worker, or a previously-cached
-        /// one from RR's own hooks.</summary>
-        private static TerrainGenerator? FindUsableTerrainGenerator()
+        /// <summary>Load FF's "Map" scene additively. Returns when the
+        /// load completes (isDone == true). If the scene is already
+        /// loaded, returns immediately without re-loading.</summary>
+        private static IEnumerator LoadMapScene()
         {
-            // First: RR's cached generator from any prior gen entry.
-            if (RiverSettingsPatch.CachedGenerator != null)
-                return RiverSettingsPatch.CachedGenerator;
+            var existing = SceneManager.GetSceneByName("Map");
+            if (existing.IsValid() && existing.isLoaded)
+            {
+                Log("'Map' scene already loaded.");
+                yield break;
+            }
 
-            // Fallback: scene-wide search.
-            return UnityEngine.Object.FindObjectOfType<TerrainGenerator>();
+            AsyncOperation? op = null;
+            try { op = SceneManager.LoadSceneAsync("Map", LoadSceneMode.Additive); }
+            catch (Exception ex) { Log($"LoadSceneAsync failed: {ex.Message}"); yield break; }
+            if (op == null) { Log("LoadSceneAsync returned null."); yield break; }
+            _mapSceneLoadedByUs = true;
+            while (!op.isDone) yield return null;
+            Log("'Map' scene load complete.");
         }
 
-        /// <summary>Spawn a hidden GameObject with a TerrainGenerator
-        /// component for previewing. Reuses the same GO across previews.
-        /// V2: this is a minimal worker — no scene template loading,
-        /// just the bare component. Some stages may NRE if they reach
-        /// for prefabs that aren't loaded; if so, the stage invocation
-        /// catches the exception and continues to the next.</summary>
-        private static TerrainGenerator? SpawnWorkerGenerator()
+        private static IEnumerator UnloadMapScene()
+        {
+            var sc = SceneManager.GetSceneByName("Map");
+            if (!sc.IsValid() || !sc.isLoaded) yield break;
+            AsyncOperation? op = null;
+            try { op = SceneManager.UnloadSceneAsync(sc); }
+            catch (Exception ex) { Log($"UnloadSceneAsync failed: {ex.Message}"); yield break; }
+            if (op == null) yield break;
+            while (!op.isDone) yield return null;
+            _mapSceneLoadedByUs = false;
+            Log("'Map' scene unloaded.");
+        }
+
+        /// <summary>Find a TerrainGenerator inside the loaded "Map" scene.
+        /// Mirrors Pangu's TryCreateSeedPreviewWorkerFromLoadedObjects
+        /// — walks scene root GameObjects and looks for the component.</summary>
+        private static TerrainGenerator? FindTerrainGeneratorInMapScene()
         {
             try
             {
-                if (_workerGO != null)
+                var sc = SceneManager.GetSceneByName("Map");
+                if (!sc.IsValid() || !sc.isLoaded) return null;
+                var roots = sc.GetRootGameObjects();
+                if (roots == null) return null;
+                foreach (var root in roots)
                 {
-                    var existing = _workerGO.GetComponent<TerrainGenerator>();
-                    if (existing != null) return existing;
-                    UnityEngine.Object.Destroy(_workerGO);
-                    _workerGO = null;
+                    if (root == null) continue;
+                    var tg = root.GetComponent<TerrainGenerator>()
+                             ?? root.GetComponentInChildren<TerrainGenerator>(true);
+                    if (tg != null) return tg;
                 }
-
-                _workerGO = new GameObject("RR_PreviewWorker");
-                UnityEngine.Object.DontDestroyOnLoad(_workerGO);
-                var tg = _workerGO.AddComponent<TerrainGenerator>();
-                return tg;
             }
             catch (Exception ex)
             {
-                Log($"Worker spawn failed: {ex.Message}");
-                if (_workerGO != null) { UnityEngine.Object.Destroy(_workerGO); _workerGO = null; }
-                return null;
+                Log($"FindTerrainGeneratorInMapScene failed: {ex.Message}");
             }
+            return null;
         }
 
-        /// <summary>Best-effort: read the seed text from FF's seed input
-        /// field on the New Game UI. Returns empty if not found.</summary>
+        /// <summary>Find any TerrainGenerator instance currently in the
+        /// scene — RR's cached one (gameplay or Pangu worker) or any other.</summary>
+        private static TerrainGenerator? FindUsableTerrainGenerator()
+        {
+            if (RiverSettingsPatch.CachedGenerator != null)
+                return RiverSettingsPatch.CachedGenerator;
+            return UnityEngine.Object.FindObjectOfType<TerrainGenerator>();
+        }
+
         private static string TryReadSeedFromUI()
         {
             try
             {
-                // The seed input is a TMP_InputField with text containing
-                // the current seed value. We'd need to find it by name.
                 var allInputs = Resources.FindObjectsOfTypeAll<TMPro.TMP_InputField>();
                 foreach (var f in allInputs)
                 {
@@ -181,9 +225,6 @@ namespace RiversRestored.Patches
             return string.Empty;
         }
 
-        /// <summary>Try to set the seed on the TerrainGenerator (or its
-        /// _generationData) via reflection. Field names vary across FF
-        /// versions, so try common ones.</summary>
         private static void TrySetSeedOnGenerator(TerrainGenerator tg, string seedText)
         {
             try
@@ -196,7 +237,6 @@ namespace RiversRestored.Patches
                     if (f.FieldType == typeof(int) && int.TryParse(seedText, out var iv))
                     { f.SetValue(tg, iv); return; }
                 }
-                // Fallback: try _generationData.seed.
                 var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
                 var gd = gdField?.GetValue(tg);
                 if (gd != null)
@@ -207,16 +247,9 @@ namespace RiversRestored.Patches
                         sf.SetValue(gd, seedText);
                 }
             }
-            catch (Exception ex)
-            {
-                Log($"Seed set failed: {ex.Message}");
-            }
+            catch (Exception ex) { Log($"Seed set failed: {ex.Message}"); }
         }
 
-        /// <summary>Invoke a stage method by name, no-op if not present.
-        /// Unwraps TargetInvocationException to show the real inner
-        /// exception in the log — the default "Exception has been thrown
-        /// by the target of an invocation" message is useless on its own.</summary>
         private static void InvokeStageIfPresent(TerrainGenerator tg, string methodName)
         {
             try
@@ -236,9 +269,6 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Diagnostic dump of TerrainGenerator's instance state
-        /// after the stage sequence runs. Logs which key fields are
-        /// populated vs null, so we know what initialization is missing.</summary>
         private static void DumpGeneratorState(TerrainGenerator tg)
         {
             try
@@ -253,7 +283,6 @@ namespace RiversRestored.Patches
                     Log($"  state: {name} = {(v == null ? "<null>" : v.GetType().Name)}");
                 }
 
-                // Inspect _generationData for heightnoise + waterAreas
                 var gdField = AccessTools.Field(t, "_generationData");
                 var gd = gdField?.GetValue(tg);
                 if (gd != null)
@@ -281,10 +310,7 @@ namespace RiversRestored.Patches
                     Log($"  state: waterAreas count={(wa?.Count ?? -1)}");
                 }
             }
-            catch (Exception ex)
-            {
-                Log($"  state dump failed: {ex.Message}");
-            }
+            catch (Exception ex) { Log($"  state dump failed: {ex.Message}"); }
         }
 
         private static void Log(string msg) =>
