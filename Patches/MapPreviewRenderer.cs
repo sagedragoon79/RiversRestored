@@ -138,16 +138,12 @@ namespace RiversRestored.Patches
                     Mathf.Sin(lightAlt),
                     Mathf.Cos(lightAz) * Mathf.Cos(lightAlt)).normalized;
 
-                // Axis convention: NATURAL (no transpose, no flip). The
-                // dev-tool's transpose+Z-flip mapping (which I tried earlier
-                // based on ff-game-map MapWidget.cpp) produced output flipped
-                // along the anti-diagonal vs FF's actual gameplay minimap.
-                // Theory: the dev tool reads SAVED game files which may be
-                // stored differently from runtime heightnoise indexing, OR
-                // FF's preview-gen path produces heightnoise in a different
-                // orientation than the save format. Empirically verified:
-                // natural mapping matches gameplay/Pangu's preview.
-                //   pixel(px, py) → heightnoise[px scaled to hnW, py scaled to hnH]
+                // Axis convention: X-INVERTED, Z-natural. Empirically
+                // verified by comparing against Pangu's preview thumbnail
+                // and FF's in-game minimap on the New Game screen — both
+                // showed river NW→SE while ours initially showed NE→SW
+                // (X-axis mirrored). Inverting hx fixes orientation.
+                //   pixel(px, py) → heightnoise[hnW-1-px scaled, py scaled]
                 int hxBorder = hnW / 10;
                 int hzBorder = hnH / 10;
                 for (int py = 0; py < OUT_H; py++)
@@ -155,7 +151,7 @@ namespace RiversRestored.Patches
                     int hz = (int)((float)py / (OUT_H - 1) * (hnH - 1));
                     for (int px = 0; px < OUT_W; px++)
                     {
-                        int hx = (int)((float)px / (OUT_W - 1) * (hnW - 1));
+                        int hx = (int)((float)(OUT_W - 1 - px) / (OUT_W - 1) * (hnW - 1));
                         float v = heightNoise[hx, hz];
                         float n = Mathf.Clamp01((v - hnMin) / hnRange);
 
@@ -257,7 +253,8 @@ namespace RiversRestored.Patches
                                         if (!mask[lx, lz]) continue;
                                         int worldX = minX + lx;
                                         if (worldX < 0 || worldX >= hnW) continue;
-                                        int px = Mathf.Clamp((int)(worldX * sxOut), 0, OUT_W - 1);
+                                        // X-axis inverted to match heightmap loop convention.
+                                        int px = Mathf.Clamp((int)((hnW - 1 - worldX) * sxOut), 0, OUT_W - 1);
                                         PaintWaterPixel(pixels, py * OUT_W + px);
                                         waterPainted++;
                                     }
@@ -265,8 +262,9 @@ namespace RiversRestored.Patches
                             }
                             else
                             {
-                                int pxLo = Mathf.Clamp((int)(minX * sxOut), 0, OUT_W - 1);
-                                int pxHi = Mathf.Clamp((int)(maxX * sxOut), 0, OUT_W - 1);
+                                // X-axis inverted bbox bounds.
+                                int pxLo = Mathf.Clamp((int)((hnW - 1 - maxX) * sxOut), 0, OUT_W - 1);
+                                int pxHi = Mathf.Clamp((int)((hnW - 1 - minX) * sxOut), 0, OUT_W - 1);
                                 int pyLo = Mathf.Clamp((int)(minZ * szOut), 0, OUT_H - 1);
                                 int pyHi = Mathf.Clamp((int)(maxZ * szOut), 0, OUT_H - 1);
                                 for (int py = pyLo; py <= pyHi; py++)
@@ -419,7 +417,8 @@ namespace RiversRestored.Patches
                     float worldZ = pos.z / CELL_SIZE;
                     if (worldX < 0 || worldX >= hnW || worldZ < 0 || worldZ >= hnH) continue;
 
-                    int px = Mathf.Clamp((int)(worldX * sxOut), 0, OUT_W - 1);
+                    // X-axis inverted to match heightmap/water raster convention.
+                    int px = Mathf.Clamp((int)((hnW - 1 - worldX) * sxOut), 0, OUT_W - 1);
                     int py = Mathf.Clamp((int)(worldZ * szOut), 0, OUT_H - 1);
 
                     // 3×3 dot for visibility.
