@@ -36,10 +36,45 @@ namespace RiversRestored.Patches
 
         private static GUIStyle? _captionStyle;
 
+        // Diagnostic counters — log first OnGUI call and gating reasons.
+        private static bool _loggedFirstOnGUI = false;
+        private static bool _loggedGateReason = false;
+
+        private void Start()
+        {
+            MelonLogger.Msg("[RR][PreviewOverlay] MonoBehaviour Start — overlay is alive.");
+        }
+
         private void OnGUI()
         {
-            if (!(RiversRestoredMod.ShowPreviewOverlay?.Value ?? false)) return;
-            if (LatestPreview == null) return;
+            if (!_loggedFirstOnGUI)
+            {
+                _loggedFirstOnGUI = true;
+                MelonLogger.Msg("[RR][PreviewOverlay] OnGUI firing. " +
+                    $"showPref={(RiversRestoredMod.ShowPreviewOverlay?.Value ?? false)} " +
+                    $"latestTex={(LatestPreview != null ? "OK" : "null")}");
+            }
+
+            if (!(RiversRestoredMod.ShowPreviewOverlay?.Value ?? false))
+            {
+                if (!_loggedGateReason)
+                {
+                    _loggedGateReason = true;
+                    MelonLogger.Msg("[RR][PreviewOverlay] gated: pref OFF.");
+                }
+                return;
+            }
+            if (LatestPreview == null)
+            {
+                if (!_loggedGateReason)
+                {
+                    _loggedGateReason = true;
+                    MelonLogger.Msg("[RR][PreviewOverlay] gated: no preview rendered yet (run a gen).");
+                }
+                return;
+            }
+            // Reset gate-reason log so we re-log if conditions change.
+            _loggedGateReason = false;
 
             int w = PANEL_W;
             int h = PANEL_H;

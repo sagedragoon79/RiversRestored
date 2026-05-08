@@ -947,20 +947,11 @@ namespace RiversRestored
                 // Optional: register with Keep Clarity's settings panel if installed.
                 KeepClarityIntegration.TryRegisterAll();
 
-                // Spawn the in-game preview overlay GameObject. Persists for
-                // the entire process via DontDestroyOnLoad so it survives
-                // scene changes (main menu ↔ in-game). OnGUI is gated by
-                // ShowPreviewOverlay pref + a non-null LatestPreview.
-                try
-                {
-                    var go = new UnityEngine.GameObject("RR_PreviewOverlay");
-                    go.AddComponent<RiversRestored.Patches.PreviewOverlay>();
-                    UnityEngine.Object.DontDestroyOnLoad(go);
-                }
-                catch (System.Exception ex)
-                {
-                    Log.Warning($"[RR] Failed to spawn preview overlay: {ex.Message}");
-                }
+                // Preview overlay GameObject is spawned later — see
+                // OnSceneWasInitialized below. Creating it here would
+                // happen before Unity has any loaded scene, which makes
+                // DontDestroyOnLoad fail and the MonoBehaviour never get
+                // its Start() called.
             }
             catch (System.Exception ex)
             {
@@ -1018,8 +1009,33 @@ namespace RiversRestored
         /// Without this, a second new-map attempt in the same session would
         /// skip the override (thinking it already applied).
         /// </summary>
+        // Tracks whether the in-game preview overlay GameObject has been
+        // spawned. Done lazily on first scene load so Unity has actually
+        // initialized — spawning in OnInitializeMelon was too early and
+        // the MonoBehaviour never received Start().
+        private static bool _previewOverlaySpawned = false;
+
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
+            // First-scene-load: spawn the preview overlay GameObject. By
+            // now Unity has a real scene, so DontDestroyOnLoad works
+            // properly and Start() will fire.
+            if (!_previewOverlaySpawned)
+            {
+                _previewOverlaySpawned = true;
+                try
+                {
+                    var go = new UnityEngine.GameObject("RR_PreviewOverlay");
+                    go.AddComponent<RiversRestored.Patches.PreviewOverlay>();
+                    UnityEngine.Object.DontDestroyOnLoad(go);
+                    Log.Msg("[RR] Spawned preview overlay GameObject (deferred to first scene load).");
+                }
+                catch (System.Exception ex)
+                {
+                    Log.Warning($"[RR] Failed to spawn preview overlay: {ex.Message}");
+                }
+            }
+
             Patches.RiverSettingsPatch.ResetGuard();
             Patches.RiverPersistence.ResetForSceneLoad();
             Patches.FishingShackPatch.ResetForSceneLoad();
