@@ -194,41 +194,52 @@ namespace RiversRestored.Patches
             }
 
             // ── Top-corner decorative flourishes (BorderTopFancy01B, mirrored) ─
-            // Two instances, each spanning roughly half the top edge. FF's
-            // sprite has the ornament at its right edge (72px slice border)
-            // so the LEFT instance's ornament hangs near center-left, and
-            // the RIGHT instance is X-flipped to put its ornament near
-            // center-right. Vertical position: anchored to top edge of
-            // border, hanging down ~26px (slightly less than the 50px
-            // native sprite height to match smaller panel proportions).
+            // Two instances, each spanning roughly half the top edge.
+            // The sprite's slice border is 11,0,72,0 — meaning the 72px
+            // RIGHT region carries the ornament. When placed unflipped at
+            // the LEFT half of our panel, that ornament hangs at our
+            // top-center-left. When the RIGHT half is X-flipped, its
+            // ornament hangs at our top-center-right. Net effect: a pair
+            // of mirrored ornaments framing the upper portion of the
+            // panel, matching FF's New Game dialog aesthetic.
+            //
+            // Height: 50px = native sprite height. Anchored to TOP of the
+            // border with pivot at top so the ornaments hang DOWNWARD into
+            // the panel. Slightly extends above the border (overflow=4px)
+            // to read as "hanging from" the edge.
             Sprite? topFancySprite = FindSpriteByName(SPRITE_TOP_FANCY);
+            const int FANCY_H = 50;
+            const int FANCY_OVERFLOW = 4;  // hangs slightly above border edge
 
             var fancyLGO = new GameObject("TopFancy_L");
             fancyLGO.transform.SetParent(borderRT, false);
             var fancyLRT = fancyLGO.AddComponent<RectTransform>();
             fancyLRT.anchorMin = new Vector2(0f, 1f);
             fancyLRT.anchorMax = new Vector2(0.5f, 1f);
-            fancyLRT.pivot = new Vector2(0f, 1f);
-            fancyLRT.anchoredPosition = new Vector2(0f, 0f);
-            fancyLRT.sizeDelta = new Vector2(0f, 26f);
+            fancyLRT.pivot = new Vector2(0.5f, 1f);
+            fancyLRT.anchoredPosition = new Vector2(0f, FANCY_OVERFLOW);
+            fancyLRT.sizeDelta = new Vector2(0f, FANCY_H);
             _topFancyL = fancyLGO.AddComponent<Image>();
             if (topFancySprite != null) { _topFancyL.sprite = topFancySprite; _topFancyL.type = Image.Type.Sliced; }
             _topFancyL.color = Color.white;
+            _topFancyL.raycastTarget = false;
 
             var fancyRGO = new GameObject("TopFancy_R");
             fancyRGO.transform.SetParent(borderRT, false);
             var fancyRRT = fancyRGO.AddComponent<RectTransform>();
             fancyRRT.anchorMin = new Vector2(0.5f, 1f);
             fancyRRT.anchorMax = new Vector2(1f, 1f);
-            fancyRRT.pivot = new Vector2(0f, 1f);
-            fancyRRT.anchoredPosition = new Vector2(0f, 0f);
-            fancyRRT.sizeDelta = new Vector2(0f, 26f);
-            // Mirror via local scale so the ornament hangs on the
-            // INSIDE (left) edge of this right-half instance.
+            fancyRRT.pivot = new Vector2(0.5f, 1f);
+            fancyRRT.anchoredPosition = new Vector2(0f, FANCY_OVERFLOW);
+            fancyRRT.sizeDelta = new Vector2(0f, FANCY_H);
+            // Mirror so ornament-end faces inward toward center, matching
+            // the LEFT instance (which keeps its ornament-end at right by
+            // the sprite's natural slice).
             fancyRRT.localScale = new Vector3(-1f, 1f, 1f);
             _topFancyR = fancyRGO.AddComponent<Image>();
             if (topFancySprite != null) { _topFancyR.sprite = topFancySprite; _topFancyR.type = Image.Type.Sliced; }
             _topFancyR.color = Color.white;
+            _topFancyR.raycastTarget = false;
 
             // Mark resolved status for lazy retry in Update.
             _spritesResolved = (shadowSprite != null && borderSprite != null && topFancySprite != null);
