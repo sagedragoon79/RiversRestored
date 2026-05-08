@@ -32,8 +32,8 @@ namespace RiversRestored.Patches
         // Sized to fit between FF's New Game settings dialog and the
         // right edge of screen at common 1920×1080 / 1920×900 layouts
         // without overlapping the settings panel.
-        private const int PANEL_W = 400;
-        private const int PANEL_H = 400;
+        private const int PANEL_W = 450;
+        private const int PANEL_H = 450;
         private const int CAPTION_H = 26;
         private const int MARGIN = 16;
 
