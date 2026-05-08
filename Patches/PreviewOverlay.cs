@@ -56,6 +56,8 @@ namespace RiversRestored.Patches
         private Image? _borderImg;
         private Image? _topFancyL;
         private Image? _topFancyR;
+        private Image? _botFancyL;
+        private Image? _botFancyR;
         private RawImage? _previewImage;
         private TextMeshProUGUI? _captionText;
 
@@ -193,71 +195,52 @@ namespace RiversRestored.Patches
                 _borderImg.color = new Color(0.55f, 0.55f, 0.6f, 1f);
             }
 
-            // ── Top-corner decorative flourishes (BorderTopFancy01B, mirrored) ─
-            // Two instances, each spanning roughly half the top edge.
-            // The sprite's slice border is 11,0,72,0 — meaning the 72px
-            // RIGHT region carries the ornament. When placed unflipped at
-            // the LEFT half of our panel, that ornament hangs at our
-            // top-center-left. When the RIGHT half is X-flipped, its
-            // ornament hangs at our top-center-right. Net effect: a pair
-            // of mirrored ornaments framing the upper portion of the
-            // panel, matching FF's New Game dialog aesthetic.
+            // ── Four corner flourishes (BorderTopFancy01B, narrow rects) ─
+            // The sprite's slice is 11,0,72,0 → 11px left + middle stretch
+            // + 72px right ornament. By making each rect just wide enough
+            // to render the slice corners (~95px) without much middle
+            // stretch, we get just the corner ornament with a minimal
+            // connecting line. Each of the 4 panel corners gets its own
+            // narrow rect, with X/Y flip combos to put the ornament
+            // pointing OUTWARD on each corner.
             //
-            // Height: 50px = native sprite height. Anchored to TOP of the
-            // border with pivot at top so the ornaments hang DOWNWARD into
-            // the panel. Slightly extends above the border (overflow=4px)
-            // to read as "hanging from" the edge.
+            // Flip rules:
+            //   X-flip (scale.x = -1): ornament at LEFT side of rect (use for L corners)
+            //   no X-flip:             ornament at RIGHT side of rect (use for R corners)
+            //   Y-flip (scale.y = -1): ornament hangs DOWN (use for TOP corners)
+            //   no Y-flip:             ornament hangs UP (use for BOTTOM corners)
+            //
+            // Vertical position: each corner's rect overlaps the panel
+            // edge by FANCY_OVERFLOW so the ornament drapes onto the
+            // border visibly.
             Sprite? topFancySprite = FindSpriteByName(SPRITE_TOP_FANCY);
+            const int FANCY_W = 95;   // wide enough for slice corners (11+72=83) plus minimal middle
             const int FANCY_H = 50;
-            // Position rect mostly INSIDE the panel: 10px above border,
-            // 40px below. The Y-flip below puts the ornament's hanging
-            // end pointing DOWN into the panel (matches FF's look where
-            // the metal scrollwork drapes from the top frame edge).
-            const int FANCY_OVERFLOW = 10;
+            const int FANCY_OVERFLOW = 8;
 
-            // Sprite slice is 11,0,72,0 — the 72px right region carries the
-            // ornament. To get ornaments at the OUTER corners (matching
-            // FF's New Game dialog), the LEFT half must be X-flipped (so
-            // its ornament-end appears at the outer-left), and the RIGHT
-            // half stays unflipped (ornament naturally at outer-right).
-            var fancyLGO = new GameObject("TopFancy_L");
-            fancyLGO.transform.SetParent(borderRT, false);
-            var fancyLRT = fancyLGO.AddComponent<RectTransform>();
-            fancyLRT.anchorMin = new Vector2(0f, 1f);
-            fancyLRT.anchorMax = new Vector2(0.5f, 1f);
-            fancyLRT.pivot = new Vector2(0.5f, 1f);
-            fancyLRT.anchoredPosition = new Vector2(0f, FANCY_OVERFLOW);
-            fancyLRT.sizeDelta = new Vector2(0f, FANCY_H);
-            // X-flip so ornament-end appears at OUTER-LEFT corner.
-            // Y-flip so ornament hangs DOWN into panel (sprite's natural
-            // orientation has the decorative end at top).
-            fancyLRT.localScale = new Vector3(-1f, -1f, 1f);
-            _topFancyL = fancyLGO.AddComponent<Image>();
-            if (topFancySprite != null) { _topFancyL.sprite = topFancySprite; _topFancyL.type = Image.Type.Sliced; }
-            _topFancyL.color = Color.white;
-            _topFancyL.raycastTarget = false;
+            _topFancyL = MakeCornerOrnament(borderRT, "TopFancy_L",
+                topFancySprite, FANCY_W, FANCY_H,
+                anchor: new Vector2(0f, 1f),
+                offset: new Vector2(0f, FANCY_OVERFLOW),
+                xFlip: true, yFlip: true);
 
-            var fancyRGO = new GameObject("TopFancy_R");
-            fancyRGO.transform.SetParent(borderRT, false);
-            var fancyRRT = fancyRGO.AddComponent<RectTransform>();
-            fancyRRT.anchorMin = new Vector2(0.5f, 1f);
-            fancyRRT.anchorMax = new Vector2(1f, 1f);
-            fancyRRT.pivot = new Vector2(0.5f, 1f);
-            fancyRRT.anchoredPosition = new Vector2(0f, FANCY_OVERFLOW);
-            fancyRRT.sizeDelta = new Vector2(0f, FANCY_H);
-            // Y-flip only — ornament naturally at OUTER-RIGHT corner; X
-            // stays as-is. Y-flip matches the LEFT half so both hang DOWN.
-            fancyRRT.localScale = new Vector3(1f, -1f, 1f);
-            _topFancyR = fancyRGO.AddComponent<Image>();
-            if (topFancySprite != null) { _topFancyR.sprite = topFancySprite; _topFancyR.type = Image.Type.Sliced; }
-            _topFancyR.color = Color.white;
-            _topFancyR.raycastTarget = false;
+            _topFancyR = MakeCornerOrnament(borderRT, "TopFancy_R",
+                topFancySprite, FANCY_W, FANCY_H,
+                anchor: new Vector2(1f, 1f),
+                offset: new Vector2(0f, FANCY_OVERFLOW),
+                xFlip: false, yFlip: true);
 
-            // Z-order fix: ensure the ornaments render LAST among their
-            // siblings (Backdrop, etc.), so they paint ON TOP of the map
-            // instead of behind it. Sibling index = paint order in UGUI.
-            fancyLGO.transform.SetAsLastSibling();
-            fancyRGO.transform.SetAsLastSibling();
+            _botFancyL = MakeCornerOrnament(borderRT, "BotFancy_L",
+                topFancySprite, FANCY_W, FANCY_H,
+                anchor: new Vector2(0f, 0f),
+                offset: new Vector2(0f, -FANCY_OVERFLOW),
+                xFlip: true, yFlip: false);
+
+            _botFancyR = MakeCornerOrnament(borderRT, "BotFancy_R",
+                topFancySprite, FANCY_W, FANCY_H,
+                anchor: new Vector2(1f, 0f),
+                offset: new Vector2(0f, -FANCY_OVERFLOW),
+                xFlip: false, yFlip: false);
 
             // Mark resolved status for lazy retry in Update.
             _spritesResolved = (shadowSprite != null && borderSprite != null && topFancySprite != null);
@@ -311,6 +294,35 @@ namespace RiversRestored.Patches
             _shadowRT.gameObject.SetActive(false);
         }
 
+        /// <summary>Create a single corner ornament Image at a specified
+        /// anchor of the parent. Anchor is a unit-square corner (0,0=BL,
+        /// 1,1=TR, etc.). Pivot is set to match the anchor so the rect
+        /// extends INWARD from that corner. Offset is added on top.
+        /// xFlip/yFlip apply localScale=-1 on the respective axes.
+        /// Sets raycastTarget=false and SetAsLastSibling so the ornament
+        /// renders on top of the panel content.</summary>
+        private static Image MakeCornerOrnament(RectTransform parent, string name,
+            Sprite? sprite, int w, int h,
+            Vector2 anchor, Vector2 offset, bool xFlip, bool yFlip)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var rt = go.AddComponent<RectTransform>();
+            rt.anchorMin = anchor;
+            rt.anchorMax = anchor;
+            rt.pivot = anchor;
+            rt.anchoredPosition = offset;
+            rt.sizeDelta = new Vector2(w, h);
+            rt.localScale = new Vector3(xFlip ? -1f : 1f, yFlip ? -1f : 1f, 1f);
+
+            var img = go.AddComponent<Image>();
+            if (sprite != null) { img.sprite = sprite; img.type = Image.Type.Sliced; }
+            img.color = Color.white;
+            img.raycastTarget = false;
+            go.transform.SetAsLastSibling();
+            return img;
+        }
+
         /// <summary>Re-attempt sprite lookup if Start() couldn't find them.
         /// Called once per frame from Update until both shadow and border
         /// sprites are bound. Cheap — Resources.FindObjectsOfTypeAll is
@@ -347,9 +359,12 @@ namespace RiversRestored.Patches
                 var s = FindSpriteByName(SPRITE_TOP_FANCY);
                 if (s != null)
                 {
-                    _topFancyL.sprite = s;
-                    _topFancyL.type = Image.Type.Sliced;
-                    if (_topFancyR != null) { _topFancyR.sprite = s; _topFancyR.type = Image.Type.Sliced; }
+                    foreach (var img in new[] { _topFancyL, _topFancyR, _botFancyL, _botFancyR })
+                    {
+                        if (img == null) continue;
+                        img.sprite = s;
+                        img.type = Image.Type.Sliced;
+                    }
                     changed = true;
                 }
             }
