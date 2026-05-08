@@ -35,7 +35,7 @@ namespace RiversRestored.Patches
         private const int PANEL_W = 425;
         private const int PANEL_H = 425;
         private const int CAPTION_H = 30;
-        private const int RIGHT_MARGIN = 16;
+        private const int RIGHT_MARGIN = 8;
 
         // Sprite/font asset names from KC's UI dump (FF's loaded assets).
         private const string SPRITE_SHADOW = "IMG_BGShadowThickSoft01";
@@ -46,10 +46,17 @@ namespace RiversRestored.Patches
         // and rebind the texture.
         private Canvas? _canvas;
         private RectTransform? _shadowRT;
+        private Image? _shadowImg;
+        private Image? _borderImg;
         private RawImage? _previewImage;
         private TextMeshProUGUI? _captionText;
 
         private bool _initialized = false;
+        // Sprites/font may not be loaded when Start() runs (FF lazy-loads
+        // the New Game UI assets). Track which ones we still need so we
+        // can retry on each Update tick until they all resolve.
+        private bool _spritesResolved = false;
+        private bool _fontResolved = false;
 
         private void Start()
         {
@@ -81,6 +88,13 @@ namespace RiversRestored.Patches
             }
 
             if (!_initialized || _shadowRT == null) return;
+
+            // Lazy retry: if Start() couldn't find FF's sprites/font (because
+            // the New Game UI hadn't loaded yet), try again every frame
+            // until they resolve. Cheap — Resources.FindObjectsOfTypeAll
+            // is a single scan and we stop calling once both flags flip.
+            if (!_spritesResolved) TryRebindSprites();
+            if (!_fontResolved) TryRebindFont();
 
             // Visibility — show only when the pref is on AND we have a preview.
             bool wantVisible = (RiversRestoredMod.ShowPreviewOverlay?.Value ?? false)
@@ -136,17 +150,17 @@ namespace RiversRestored.Patches
             _shadowRT.anchoredPosition = new Vector2(-RIGHT_MARGIN, 0f);
             _shadowRT.sizeDelta = new Vector2(PANEL_W + 24, PANEL_H + CAPTION_H + 24);
 
-            var shadowImg = shadowGO.AddComponent<Image>();
+            _shadowImg = shadowGO.AddComponent<Image>();
             if (shadowSprite != null)
             {
-                shadowImg.sprite = shadowSprite;
-                shadowImg.type = Image.Type.Sliced;
-                shadowImg.color = new Color(0f, 0f, 0f, 0.85f);
+                _shadowImg.sprite = shadowSprite;
+                _shadowImg.type = Image.Type.Sliced;
+                _shadowImg.color = new Color(0f, 0f, 0f, 0.85f);
             }
             else
             {
-                // Fallback: plain dark rectangle.
-                shadowImg.color = new Color(0f, 0f, 0f, 0.7f);
+                // Fallback — flagged for lazy retry in Update.
+                _shadowImg.color = new Color(0f, 0f, 0f, 0.7f);
             }
 
             // ── Border (FF's dark thick frame) ───────────────────────────
@@ -159,18 +173,21 @@ namespace RiversRestored.Patches
             borderRT.offsetMin = new Vector2(8f, 8f);   // inset 8px from shadow
             borderRT.offsetMax = new Vector2(-8f, -8f);
 
-            var borderImg = borderGO.AddComponent<Image>();
+            _borderImg = borderGO.AddComponent<Image>();
             if (borderSprite != null)
             {
-                borderImg.sprite = borderSprite;
-                borderImg.type = Image.Type.Sliced;
-                borderImg.color = Color.white;
+                _borderImg.sprite = borderSprite;
+                _borderImg.type = Image.Type.Sliced;
+                _borderImg.color = Color.white;
             }
             else
             {
-                // Fallback: thin gray outline simulated via a colored rect.
-                borderImg.color = new Color(0.55f, 0.55f, 0.6f, 1f);
+                _borderImg.color = new Color(0.55f, 0.55f, 0.6f, 1f);
             }
+
+            // Mark resolved status for lazy retry in Update.
+            _spritesResolved = (shadowSprite != null && borderSprite != null);
+            _fontResolved = (font != null);
 
             // ── Backdrop fill (inside the border, dark + slightly transparent) ─
             var backdropGO = new GameObject("Backdrop");
@@ -218,6 +235,63 @@ namespace RiversRestored.Patches
 
             // Start hidden — Update() flips it on when conditions met.
             _shadowRT.gameObject.SetActive(false);
+        }
+
+        /// <summary>Re-attempt sprite lookup if Start() couldn't find them.
+        /// Called once per frame from Update until both shadow and border
+        /// sprites are bound. Cheap — Resources.FindObjectsOfTypeAll is
+        /// O(loaded objects) and we stop after success.</summary>
+        private void TryRebindSprites()
+        {
+            if (_shadowImg == null || _borderImg == null) return;
+
+            bool changed = false;
+            if (_shadowImg.sprite == null)
+            {
+                var s = FindSpriteByName(SPRITE_SHADOW);
+                if (s != null)
+                {
+                    _shadowImg.sprite = s;
+                    _shadowImg.type = Image.Type.Sliced;
+                    _shadowImg.color = new Color(0f, 0f, 0f, 0.85f);
+                    changed = true;
+                }
+            }
+            if (_borderImg.sprite == null)
+            {
+                var s = FindSpriteByName(SPRITE_BORDER);
+                if (s != null)
+                {
+                    _borderImg.sprite = s;
+                    _borderImg.type = Image.Type.Sliced;
+                    _borderImg.color = Color.white;
+                    changed = true;
+                }
+            }
+            if (changed)
+                MelonLogger.Msg("[RR][PreviewOverlay] Late-bound FF sprites — panel theme applied.");
+            _spritesResolved = (_shadowImg.sprite != null && _borderImg.sprite != null);
+        }
+
+        /// <summary>Re-attempt font lookup if Start() couldn't find it.</summary>
+        private void TryRebindFont()
+        {
+            if (_captionText == null) return;
+            if (_captionText.font == null
+                || _captionText.font.name.IndexOf(FONT_NAME, StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                var f = FindFontByName(FONT_NAME);
+                if (f != null)
+                {
+                    _captionText.font = f;
+                    MelonLogger.Msg("[RR][PreviewOverlay] Late-bound FF font.");
+                }
+            }
+            if (_captionText.font != null
+                && _captionText.font.name.IndexOf(FONT_NAME, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                _fontResolved = true;
+            }
         }
 
         /// <summary>Find a Sprite by name (case-insensitive substring match)

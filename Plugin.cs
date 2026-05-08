@@ -579,16 +579,64 @@ namespace RiversRestored
         /// MelonPreferences.cfg / KC). Falls back to the hardcoded
         /// <see cref="Presets"/> dictionary if entries aren't yet populated
         /// (defensive — should always exist after OnInitializeMelon).</summary>
+        /// <summary>Read FF's current TerrainGenerator's mapSettings.size
+        /// enum and return an index: 0=Small, 1=Medium, 2=Large. Returns 1
+        /// (Medium) on any failure so auto-scale falls back to the
+        /// preset's baseline values.</summary>
+        private static int ReadCurrentMapSizeIndex()
+        {
+            try
+            {
+                var tg = RiversRestored.Patches.RiverSettingsPatch.CachedGenerator;
+                if (tg == null) return 1;
+                var msField = HarmonyLib.AccessTools.Field(tg.GetType(), "mapSettings");
+                var ms = msField?.GetValue(tg);
+                if (ms == null) return 1;
+                var sizeField = ms.GetType().GetField("size",
+                    System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Instance);
+                if (sizeField == null) return 1;
+                var v = sizeField.GetValue(ms);
+                if (v == null) return 1;
+                string n = v.ToString();
+                if (n.IndexOf("Small", System.StringComparison.OrdinalIgnoreCase) >= 0) return 0;
+                if (n.IndexOf("Large", System.StringComparison.OrdinalIgnoreCase) >= 0) return 2;
+                return 1;  // Medium or unknown
+            }
+            catch { return 1; }
+        }
+
         public static RiverPresetValues GetEffectiveValues()
         {
             var mode = RiverPreset?.Value ?? RiverPresetMode.IdyllicValley;
             if (mode != RiverPresetMode.Custom)
             {
+                RiverPresetValues v;
                 if (PresetEntries.TryGetValue(mode, out var entries) && entries != null)
-                    return entries.ToValues();
-                if (Presets.TryGetValue(mode, out var preset))
-                    return preset;
+                    v = entries.ToValues();
+                else if (Presets.TryGetValue(mode, out var preset))
+                    v = preset;
+                else goto custom;
+
+                // Auto-scale NumRivers and MinPoints by map size. Preset
+                // sliders are tuned for Medium as the baseline. Small maps
+                // can't fit as many or as long rivers; large maps benefit
+                // from more / longer ones to keep the same visual density.
+                // Factors empirically chosen — refine after testing.
+                int sizeIdx = ReadCurrentMapSizeIndex();
+                float numScale, minPtsScale;
+                switch (sizeIdx)
+                {
+                    case 0:  numScale = 0.7f; minPtsScale = 0.7f; break;  // Small
+                    case 2:  numScale = 1.3f; minPtsScale = 1.3f; break;  // Large
+                    default: numScale = 1.0f; minPtsScale = 1.0f; break;  // Medium / unknown
+                }
+                v.NumRivers = System.Math.Max(1, (int)System.Math.Round(v.NumRivers * numScale));
+                v.MinPoints = System.Math.Max(1, (int)System.Math.Round(v.MinPoints * minPtsScale));
+                return v;
             }
+        custom:
             // Custom: pull from individual cfg entries (with safe fallbacks
             // so an uninitialized entry doesn't blow up gen).
             return new RiverPresetValues
