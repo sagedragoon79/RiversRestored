@@ -90,33 +90,48 @@ namespace RiversRestored.Patches
                     Log($"Loaded 'Map' scene; using its TerrainGenerator on '{tg.gameObject.name}'.");
                 }
 
-                // ── Step 3: prepare seed and run gen pipeline ─────────
+                // ── Step 3: find/configure TerrainGeneratorController ──
+                // Pangu's pattern: set TGC.terrainType from SettingsManager,
+                // set seed/size, configure debugOptions, then invoke
+                // TGC.GenerateInternal(false) which orchestrates the full
+                // pipeline correctly. Calling individual TG stage methods
+                // produces NaN heightnoise because state isn't initialized
+                // properly — the controller's GenerateInternal handles all
+                // that prep work.
+                var tgc = tg.GetComponent<TerrainGeneratorController>()
+                          ?? tg.GetComponentInParent<TerrainGeneratorController>()
+                          ?? UnityEngine.Object.FindObjectOfType<TerrainGeneratorController>();
+                if (tgc == null)
+                {
+                    Log("No TerrainGeneratorController found — can't run native gen path.");
+                    yield break;
+                }
+                Log($"Using TerrainGeneratorController on '{tgc.gameObject.name}'.");
+
+                // Apply user's biome selection from FF's SettingsManager.
+                ApplyBiomeFromSettings(tgc);
+
                 string seed = TryReadSeedFromUI();
                 if (!string.IsNullOrEmpty(seed))
                 {
                     Log($"Seed from UI: '{seed}'");
-                    TrySetSeedOnGenerator(tg, seed);
+                    TrySetSeedOnController(tgc, seed);
                 }
+
+                // Force a fresh gen pass.
+                TrySetIsLoadedFalse(tgc);
+
+                // Skip expensive stages we don't need for preview.
+                ConfigureDebugOptions(tg);
 
                 // Reset our renderer's per-gen flag.
                 MapPreviewRenderer.RenderedThisGen = false;
 
-                InvokeStageIfPresent(tg, "PreGenerateShared");
-                InvokeStageIfPresent(tg, "PreGenerate");
-                foreach (var s in new[] {
-                    "GenerateAsync_Setup_Stage1",
-                    "GenerateAsync_Voronoi_Stage2",
-                    "GenerateAsync_Noise_Stage3",
-                    "GenerateAsync_Features_Stage5",
-                    "GenerateAsync_Biomes_Stage10",
-                    "GenerateAsync_Prototypes_Stage20",
-                    "GenerateAsync_PreWater_Stage37",
-                    "GenerateAsync_RiverPaths_Stage38",
-                    "GenerateAsync_PaintBiomes_Stage40",
-                    "GenerateAsync_Water_Stage50",
-                })
+                // Run FF's native gen via TGC.GenerateInternal(false).
+                bool genOk = InvokeGenerateInternal(tgc);
+                if (!genOk)
                 {
-                    InvokeStageIfPresent(tg, s);
+                    Log("GenerateInternal didn't run cleanly — preview may be incomplete.");
                 }
 
                 DumpGeneratorState(tg);
@@ -223,6 +238,136 @@ namespace RiversRestored.Patches
             }
             catch { }
             return string.Empty;
+        }
+
+        /// <summary>Read FF's SettingsManager.Instance.mapType and apply
+        /// it to the worker controller's terrainType field. Pangu does
+        /// this every preview run to honor the user's biome selection.</summary>
+        private static void ApplyBiomeFromSettings(TerrainGeneratorController tgc)
+        {
+            try
+            {
+                var smType = AccessTools.TypeByName("SettingsManager");
+                if (smType == null) { Log("SettingsManager type not found."); return; }
+                var instProp = smType.GetProperty("Instance",
+                    BindingFlags.Public | BindingFlags.Static);
+                var inst = instProp?.GetValue(null);
+                if (inst == null)
+                {
+                    // Try UnitySingletonPersistent<SettingsManager>.Instance
+                    var uspType = AccessTools.TypeByName("UnitySingletonPersistent`1")
+                                  ?.MakeGenericType(smType);
+                    var uspInst = uspType?.GetProperty("Instance",
+                        BindingFlags.Public | BindingFlags.Static);
+                    inst = uspInst?.GetValue(null);
+                }
+                if (inst == null) { Log("SettingsManager.Instance is null."); return; }
+                var mapTypeField = smType.GetField("mapType",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var mapTypeProp = smType.GetProperty("mapType",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                object? mapType = mapTypeField?.GetValue(inst) ?? mapTypeProp?.GetValue(inst);
+                if (mapType == null) { Log("SettingsManager.mapType is null."); return; }
+
+                var tgcTerrainTypeField = AccessTools.Field(tgc.GetType(), "terrainType");
+                var tgcTerrainTypeProp = tgc.GetType().GetProperty("terrainType");
+                if (tgcTerrainTypeField != null) tgcTerrainTypeField.SetValue(tgc, mapType);
+                else if (tgcTerrainTypeProp != null) tgcTerrainTypeProp.SetValue(tgc, mapType);
+                Log($"Set TGC.terrainType = {mapType}");
+            }
+            catch (Exception ex) { Log($"ApplyBiomeFromSettings failed: {ex.Message}"); }
+        }
+
+        /// <summary>Set TGC.seed (or .seedText) from the UI value.</summary>
+        private static void TrySetSeedOnController(TerrainGeneratorController tgc, string seedText)
+        {
+            try
+            {
+                foreach (var name in new[] { "seed", "Seed", "currentMapSeed" })
+                {
+                    var f = AccessTools.Field(tgc.GetType(), name);
+                    if (f == null) continue;
+                    if (f.FieldType == typeof(string)) { f.SetValue(tgc, seedText); return; }
+                    if (f.FieldType == typeof(int) && int.TryParse(seedText, out var iv))
+                    { f.SetValue(tgc, iv); return; }
+                }
+                var p = tgc.GetType().GetProperty("seed");
+                if (p != null && p.CanWrite)
+                {
+                    if (p.PropertyType == typeof(string)) p.SetValue(tgc, seedText);
+                    else if (p.PropertyType == typeof(int) && int.TryParse(seedText, out var iv))
+                        p.SetValue(tgc, iv);
+                }
+            }
+            catch (Exception ex) { Log($"Seed-on-controller set failed: {ex.Message}"); }
+        }
+
+        /// <summary>Force isLoaded=false on the controller so a fresh gen runs.</summary>
+        private static void TrySetIsLoadedFalse(TerrainGeneratorController tgc)
+        {
+            try
+            {
+                var f = AccessTools.Field(tgc.GetType(), "isLoaded")
+                       ?? AccessTools.Field(tgc.GetType(), "IsLoaded");
+                if (f != null) f.SetValue(tgc, false);
+            }
+            catch { }
+        }
+
+        /// <summary>Configure TG.debugOptions to skip expensive stages we
+        /// don't need for preview rendering. Mirrors Pangu's settings.</summary>
+        private static void ConfigureDebugOptions(TerrainGenerator tg)
+        {
+            try
+            {
+                var doField = AccessTools.Field(tg.GetType(), "debugOptions")
+                              ?? AccessTools.Field(tg.GetType(), "_debugOptions");
+                var debugOpts = doField?.GetValue(tg);
+                if (debugOpts == null) return;
+                var t = debugOpts.GetType();
+                void Set(string n, bool v)
+                {
+                    var f = t.GetField(n, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (f != null) f.SetValue(debugOpts, v);
+                }
+                Set("generateFeatures", true);
+                Set("generateRivers", true);
+                Set("paintTerrain", true);
+                Set("paintBiomes", true);
+                Set("generateRoads", false);
+                Set("generateTrees", false);
+                Set("generateDetails", false);
+                Set("generateObjects", false);
+            }
+            catch (Exception ex) { Log($"ConfigureDebugOptions failed: {ex.Message}"); }
+        }
+
+        /// <summary>Invoke TGC.GenerateInternal(false) — the synchronous
+        /// version of FF's gen pipeline. Returns true on success.</summary>
+        private static bool InvokeGenerateInternal(TerrainGeneratorController tgc)
+        {
+            try
+            {
+                var m = AccessTools.Method(tgc.GetType(), "GenerateInternal", new[] { typeof(bool) });
+                if (m == null)
+                {
+                    Log("GenerateInternal(bool) method not found on TGC.");
+                    return false;
+                }
+                m.Invoke(tgc, new object[] { false });
+                return true;
+            }
+            catch (TargetInvocationException tex)
+            {
+                var inner = tex.InnerException;
+                Log($"GenerateInternal threw: {(inner != null ? inner.GetType().Name + ": " + inner.Message : tex.Message)}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log($"GenerateInternal threw: {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
         }
 
         private static void TrySetSeedOnGenerator(TerrainGenerator tg, string seedText)
