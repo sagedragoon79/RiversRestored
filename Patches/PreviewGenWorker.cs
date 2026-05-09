@@ -324,10 +324,31 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Read SettingsManager.mapSizeValue (static). Returns
+        /// <summary>Read map size index — preferring live UI slider value
+        /// over SettingsManager.mapSizeValue (which is stale until the
+        /// user clicks Start, similar to the difficulty fields). Returns
         /// 1 (Medium) on any failure.</summary>
         private static int TryReadMapSizeIndex()
         {
+            // Prefer live UI value: the slider's .value reflects the
+            // user's CURRENT selection, before they click Start to
+            // commit it to SettingsManager.
+            try
+            {
+                var sliders = Resources.FindObjectsOfTypeAll<UnityEngine.UI.Slider>();
+                foreach (var s in sliders)
+                {
+                    if (s == null || !s.gameObject.activeInHierarchy) continue;
+                    var n = s.gameObject.name ?? "";
+                    if (n.IndexOf("MapSize", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        return Mathf.RoundToInt(s.value);
+                    }
+                }
+            }
+            catch { }
+
+            // Fallback: stale SettingsManager static field.
             try
             {
                 var smType = AccessTools.TypeByName("SettingsManager");
@@ -553,8 +574,12 @@ namespace RiversRestored.Patches
                 // stored enum values.
                 string res = ReadDifficulty("startingResourcesDifficultyValue");
                 string mal = ReadDifficulty("diseaseDifficultyValue");
-                string wld = ReadDifficulty("animalDifficultyValue");
-                string raid = ReadDifficulty("raiderDifficultyValue");
+                // Wildlife/Raiders FF UI buttons store enum value one tier
+                // higher than the UI label suggests (Pioneer button writes
+                // Difficulty.Normal, not Easy). Empirically verified by
+                // user — offset -1 maps stored values back to UI labels.
+                string wld = ReadDifficulty("animalDifficultyValue", offset: -1);
+                string raid = ReadDifficulty("raiderDifficultyValue", offset: -1);
                 Log($"  Difficulty raw values: " +
                     $"resources={ReadDifficultyRaw("startingResourcesDifficultyValue")} " +
                     $"disease={ReadDifficultyRaw("diseaseDifficultyValue")} " +
