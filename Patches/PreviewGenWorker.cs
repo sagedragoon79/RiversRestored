@@ -140,17 +140,33 @@ namespace RiversRestored.Patches
                 ApplyTgcGenParameters(tgc, terrainSeed, mapSizeIdx, theme,
                     mountainValue, waterValue);
                 TrySetIsLoadedFalse(tgc);
-                ConfigureDebugOptions(tg);
 
                 // Reset our renderer's per-gen flag.
                 MapPreviewRenderer.RenderedThisGen = false;
 
-                // Run FF's native gen via TGC.GenerateInternal(false).
-                bool genOk = InvokeGenerateInternal(tgc);
-                if (!genOk)
-                {
-                    Log("GenerateInternal didn't run cleanly — preview may be incomplete.");
-                }
+                // Pangu's full sequence after parameter application:
+                //   1. TGC.GenerateInternal(false)          — TGC-side init
+                //   2. TG.ResetGeneratedData()              — clear prior state
+                //   3. Configure TG.debugOptions            — skip expensive stages
+                //   4. TG.inGame = false                    — preview mode
+                //   5. TG.generating = true                 — flag for stages
+                //   6. Set TG.rng.Seed from terrainSettings — deterministic
+                //   7. TG.PreGenerate()                     — pre-stage init
+                //   8. Create fresh _generationData         — clean output container
+                //   9. TG.GenerateAsync()                   — RUN THE ACTUAL GEN
+                bool ok = InvokeGenerateInternal(tgc);
+                if (!ok)
+                    Log("GenerateInternal threw — continuing anyway.");
+                TryResetGeneratedData(tg);
+                ConfigureDebugOptions(tg);
+                SetWorkerFlag(tg, "inGame", false);
+                SetWorkerFlag(tg, "generating", true);
+                SetRngSeed(tg);
+                InvokeMethodIfPresent(tg, "PreGenerate");
+                CreateFreshGenerationData(tg);
+                ok = InvokeMethodIfPresent(tg, "GenerateAsync");
+                if (!ok)
+                    Log("GenerateAsync threw — preview will likely be empty.");
 
                 DumpGeneratorState(tg);
 
@@ -487,6 +503,102 @@ namespace RiversRestored.Patches
             catch (Exception ex)
             {
                 Log($"GenerateInternal threw: {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>Call TG.ResetGeneratedData() to clear any prior gen state.</summary>
+        private static void TryResetGeneratedData(TerrainGenerator tg)
+        {
+            try
+            {
+                var m = AccessTools.Method(tg.GetType(), "ResetGeneratedData", new Type[0]);
+                m?.Invoke(tg, null);
+            }
+            catch (Exception ex) { Log($"ResetGeneratedData threw: {ex.Message}"); }
+        }
+
+        /// <summary>Set a public/non-public bool field on the worker TG.</summary>
+        private static void SetWorkerFlag(TerrainGenerator tg, string fieldName, bool value)
+        {
+            try
+            {
+                var f = AccessTools.Field(tg.GetType(), fieldName);
+                if (f != null && f.FieldType == typeof(bool)) f.SetValue(tg, value);
+            }
+            catch { }
+        }
+
+        /// <summary>Set the worker's RNG seed from terrainSettings.seed —
+        /// makes the gen deterministic per seed.</summary>
+        private static void SetRngSeed(TerrainGenerator tg)
+        {
+            try
+            {
+                var rngField = AccessTools.Field(tg.GetType(), "rng")
+                              ?? AccessTools.Field(tg.GetType(), "_rng");
+                var rng = rngField?.GetValue(tg);
+                if (rng == null) return;
+
+                var tsField = AccessTools.Field(tg.GetType(), "terrainSettings");
+                var ts = tsField?.GetValue(tg);
+                int seed = 1;
+                if (ts != null)
+                {
+                    var sField = ts.GetType().GetField("seed",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (sField != null) seed = Math.Max(1, (int)(sField.GetValue(ts) ?? 1));
+                }
+
+                var seedProp = rng.GetType().GetProperty("Seed");
+                if (seedProp != null && seedProp.CanWrite)
+                {
+                    seedProp.SetValue(rng, (uint)seed);
+                }
+                else
+                {
+                    var seedF = rng.GetType().GetField("Seed",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (seedF != null) seedF.SetValue(rng, (uint)seed);
+                }
+            }
+            catch (Exception ex) { Log($"SetRngSeed failed: {ex.Message}"); }
+        }
+
+        /// <summary>Allocate a fresh _generationData and assign to TG.
+        /// Pangu does this between PreGenerate and GenerateAsync.</summary>
+        private static void CreateFreshGenerationData(TerrainGenerator tg)
+        {
+            try
+            {
+                var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
+                if (gdField == null) { Log("_generationData field not found."); return; }
+                var gdType = gdField.FieldType;
+                var inst = Activator.CreateInstance(gdType);
+                gdField.SetValue(tg, inst);
+            }
+            catch (Exception ex) { Log($"CreateFreshGenerationData failed: {ex.Message}"); }
+        }
+
+        /// <summary>Invoke a no-arg method on the TG. Returns true on success.</summary>
+        private static bool InvokeMethodIfPresent(TerrainGenerator tg, string methodName)
+        {
+            try
+            {
+                var m = AccessTools.Method(tg.GetType(), methodName, new Type[0]);
+                if (m == null) { Log($"{methodName} method not found."); return false; }
+                m.Invoke(tg, null);
+                return true;
+            }
+            catch (TargetInvocationException tex)
+            {
+                var inner = tex.InnerException;
+                Log($"  {methodName} threw: {(inner != null ? inner.GetType().Name + ": " + inner.Message : tex.Message)}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log($"  {methodName} threw: {ex.GetType().Name}: {ex.Message}");
                 return false;
             }
         }
