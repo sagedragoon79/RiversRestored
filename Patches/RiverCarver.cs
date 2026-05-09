@@ -26,6 +26,10 @@ namespace RiversRestored.Patches
     /// </summary>
     internal static class RiverCarver
     {
+        // Latches true on the first skip log per IsPreviewActive=true
+        // cycle, resets when the gate flips off. Keeps the log readable.
+        private static bool _loggedSkipThisGate = false;
+
         private static bool _dumpedShape = false;
         private static bool _carved = false;
         private static bool _dumpedAPIShape = false;
@@ -250,6 +254,29 @@ namespace RiversRestored.Patches
             try
             {
                 if (!RiversRestoredMod.RiversEnabled.Value) return;
+                // Skip terrain carve during preview gen. The preview
+                // renderer reads _generationData.heightNoise (untouched
+                // by carve) + waterAreas (still populated). Letting the
+                // carve run would mutate the live Unity Terrain on the
+                // additively-loaded "Map" scene, which then gets adopted
+                // by FF's gameplay flow and hangs the load screen. See
+                // PreviewGenWorker.IsPreviewActive for the full rationale.
+                if (PreviewGenWorker.IsPreviewActive)
+                {
+                    // Throttle the log: fires from OnUpdate per-frame
+                    // polling, would otherwise spam ~2 lines/sec for the
+                    // 15-30s gen window. Log once per gate-on cycle —
+                    // when the gate flips back off, we'll log again the
+                    // next time it flips on.
+                    if (!_loggedSkipThisGate)
+                    {
+                        _loggedSkipThisGate = true;
+                        Log("Preview active — skipping CarveAllRivers (data path only). " +
+                            "Will resume on next preview/gameplay gen.");
+                    }
+                    return;
+                }
+                _loggedSkipThisGate = false;
                 if (_carved) return;
                 // CRITICAL: this check is NOT a duplicate of OnUpdate's gate.
                 // CarveAllRivers is also called directly from

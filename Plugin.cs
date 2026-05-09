@@ -989,6 +989,11 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
+                // Pangu-pattern: prefix on StartSceneManager.StartNewGame
+                // so we tear down the preview worker BEFORE FF begins
+                // its gameplay scene transition. Without this, FF can
+                // adopt the preview's mutated TGC and hang at ~85%.
+                Patches.StartNewGamePatch.Apply(HarmonyInstance);
                 Log.Msg($"[RR] Rivers Restored 1.3.0 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
 
@@ -1062,6 +1067,53 @@ namespace RiversRestored
         // initialized — spawning in OnInitializeMelon was too early and
         // the MonoBehaviour never received Start().
         private static bool _previewOverlaySpawned = false;
+
+        /// <summary>Pangu-pattern Map-scene discriminator. Mirrors
+        /// Pangu_FF.decompiled.cs:929. When the "Map" scene initializes:
+        ///   • If WE triggered the load (PreviewGenWorker._sceneInitPending),
+        ///     just clear the flag — the worker is mid-use.
+        ///   • Otherwise FF is loading Map for gameplay — tear down the
+        ///     preview worker NOW, before FF's terrain init runs against
+        ///     our mutated TerrainGeneratorController.
+        ///
+        /// This is the keystone of the cleanup discipline. Without it
+        /// the polluted TGC from the preview gets adopted by the
+        /// gameplay flow and hangs the load screen at ~85%.</summary>
+        public override void OnSceneWasInitialized(int buildIndex, string sceneName)
+        {
+            try
+            {
+                if (string.Equals(sceneName, "Map", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    if (Patches.PreviewGenWorker._sceneInitPending)
+                    {
+                        Patches.PreviewGenWorker._sceneInitPending = false;
+                        Log.Msg("[RR] Map scene init from our preview load — leaving worker alone.");
+                    }
+                    else if (Patches.PreviewGenWorker.HasActivePreviewState())
+                    {
+                        // FF is initializing Map (not us) AND we still
+                        // have preview state to clean up — tear it down
+                        // before FF's gameplay path proceeds. This branch
+                        // must NOT fire on FF's normal gameplay scene
+                        // load; otherwise StopWorkerCoroutines walks the
+                        // fresh Map scene and kills FF's gen coroutines,
+                        // hanging the load. The Start prefix's HardCancel
+                        // normally clears all preview state before this
+                        // hook fires for the gameplay scene, so we
+                        // expect this branch to run only when something
+                        // else (player aborted, edge cases) leaves
+                        // worker state behind.
+                        Log.Msg("[RR] Map scene init from FF with stale preview state — hard-cancelling.");
+                        Patches.PreviewGenWorker.HardCancel(unload: false);
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Log.Warning($"[RR] OnSceneWasInitialized hook failed: {ex.Message}");
+            }
+        }
 
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {

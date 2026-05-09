@@ -1479,6 +1479,17 @@ namespace RiversRestored.Patches
         {
             try
             {
+                // Skip during preview gen. Rebuilding the live WaterPlane
+                // chunks here would attach RR's modifications to the
+                // additively-loaded Map scene, which FF then adopts for
+                // gameplay → load-screen hang. The preview renderer
+                // doesn't read WaterPlane chunk meshes anyway. See
+                // PreviewGenWorker.IsPreviewActive.
+                if (PreviewGenWorker.IsPreviewActive)
+                {
+                    Log("Preview active — skipping ForceWaterPlaneRebuild.");
+                    return;
+                }
                 var tgComp = tg as Component;
                 if (tgComp == null) { Log("ForceWaterPlaneRebuild: TG not a Component"); return; }
                 Transform? seaLayer = tgComp.transform.Find("Sea Layer");

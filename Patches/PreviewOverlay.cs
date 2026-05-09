@@ -1,4 +1,6 @@
 using System;
+using System.Reflection;
+using HarmonyLib;
 using MelonLoader;
 using TMPro;
 using UnityEngine;
@@ -41,8 +43,12 @@ namespace RiversRestored.Patches
         // Layout — values in Canvas-space pixels at the reference resolution
         // (1920×1080). CanvasScaler will scale on different displays.
         private const int PANEL_W = 425;
-        private const int PANEL_H = 425;
+        // Sized so the preview-image rect inside the panel (panel minus
+        // caption strip and 4px margins on top/bottom) ends up square,
+        // matching the square 768×768 render texture without horizontal
+        // stretching. Math: (PANEL_W - 8) == (PANEL_H - CAPTION_H - 8).
         private const int CAPTION_H = 48;  // 2 lines @ ~22px each
+        private const int PANEL_H = PANEL_W + CAPTION_H;
         private const int RIGHT_MARGIN = 8;
 
         // Sprite/font asset names from KC's UI dump (FF's loaded assets).
@@ -73,6 +79,72 @@ namespace RiversRestored.Patches
         // can retry on each Update tick until they all resolve.
         private bool _spritesResolved = false;
         private bool _fontResolved = false;
+
+        // Cached GraphicRaycaster ref so Update() doesn't GetComponent
+        // every frame. The MonoBehaviour adds it once in BuildHierarchy.
+        private GraphicRaycaster? _graphicRaycaster;
+
+        // Pangu-style progress bar — shown when preview gen is in
+        // flight and captions haven't populated yet. Replaces the
+        // panel's "empty state" with something more informative.
+        private RectTransform? _progressBarFill;
+        private TextMeshProUGUI? _progressBarLabel;
+        private GameObject? _progressBarRoot;
+        // Smoothed progress (0..1). Lerps toward the target each frame
+        // so the bar doesn't stutter between stage reads.
+        private float _smoothedProgress = 0f;
+        // Indeterminate-mode hop position (0..1) for cases where we
+        // can't read the gen stage. Bar segment slides L→R→L.
+        private float _indeterminatePhase = 0f;
+        // Stall detection — if the determinate progress hasn't moved
+        // for this long, switch to indeterminate animation so the bar
+        // keeps moving and the user doesn't think the panel is frozen.
+        // The most common cause is a soft-restart waiting for the
+        // previous gen's coroutines to be torn down.
+        private float _lastProgressMoveAt = 0f;
+        private float _lastProgressValue = -1f;
+        private const float STALL_TO_INDETERMINATE_SECONDS = 1.5f;
+
+        // Frame counter for throttling the lazy rebind. Resources.
+        // FindObjectsOfTypeAll<Sprite>() returns a fresh array of every
+        // loaded Sprite (potentially thousands) — calling it every frame
+        // allocates enough garbage to trigger GC sweeps every ~3 seconds,
+        // which the user sees as periodic visual stutter. Throttle to
+        // once per ~30 frames.
+        private int _rebindThrottle = 0;
+        private const int REBIND_INTERVAL_FRAMES = 30;
+
+        // Pangu-style auto-regen state. The overlay polls FF's New Game
+        // UI per frame for changes to map size / terrain type / seed and
+        // the Advanced Settings panel's open/closed state. When the
+        // panel opens (with the pref enabled) or any of the three
+        // settings change while the panel is open, debounce briefly,
+        // then trigger a fresh preview via PreviewGenWorker.
+        // TriggerPreviewSoftRestart so an in-flight gen gets cancelled
+        // and the latest state wins.
+        private CanvasGroup? _advancedPanelGroup;
+        // Cached seed input field ref. Looked up once via
+        // Resources.FindObjectsOfTypeAll, then read .text per frame
+        // (cheap accessor) for change detection. The earlier
+        // approach scanned every frame — that allocated enough
+        // garbage to stall Unity 5+ seconds on a reroll. NB: we
+        // can't read SettingsManager.mapTerrainSeedValue directly
+        // because the UI's RerollMap (Assembly-CSharp.cs:289327)
+        // updates only the string field + input field text, NOT the
+        // static int — that gets written at StartNewGame time.
+        private TMP_InputField? _seedInputField;
+        private int _seedFieldLookupThrottle = 0;
+        private const int SEED_FIELD_LOOKUP_INTERVAL_FRAMES = 30;
+
+        private object? _lastMapSize;
+        private string _lastSeedText = "";
+        private bool _wasPanelOpenAndEnabled = false;
+        private float _changeDetectedAt = -1f;
+        private const float DEBOUNCE_SECONDS = 0.30f;
+        // Throttle for the panel-CanvasGroup lookup (Resources.FindObjectsOfTypeAll
+        // is expensive). Once found, we cache and stop searching.
+        private int _panelLookupThrottle = 0;
+        private const int PANEL_LOOKUP_INTERVAL_FRAMES = 30;
 
         private void Start()
         {
@@ -105,38 +177,96 @@ namespace RiversRestored.Patches
 
             if (!_initialized || _shadowRT == null) return;
 
-            // Lazy retry: if Start() couldn't find FF's sprites/font (because
-            // the New Game UI hadn't loaded yet), try again every frame
-            // until they resolve. Cheap — Resources.FindObjectsOfTypeAll
-            // is a single scan and we stop calling once both flags flip.
-            if (!_spritesResolved) TryRebindSprites();
-            if (!_fontResolved) TryRebindFont();
+            // Pangu-pattern Map-scene unload watchdog. The preview gen runs
+            // tgc.GenSliced_Generate(false) which mutates the live TGC; if
+            // we don't unload the Map scene before gameplay starts, the
+            // load screen hangs. This tick check fires once per frame and
+            // unloads the scene the moment GameManager.terrainManager
+            // becomes available (= user clicked Start, gameplay loading).
+            PreviewGenWorker.TickUnloadWatchdog(this);
 
-            // Visibility — show whenever the pref is on. If no preview
-            // texture exists yet, we show a placeholder + the PREVIEW
-            // button so the user has a way to trigger one. (Previously
-            // we required LatestPreview != null too, which caused a
-            // chicken-and-egg problem when Pangu wasn't running: no
-            // texture → panel hidden → button unreachable → no way to
-            // generate a texture.)
-            bool wantVisible = RiversRestoredMod.ShowPreviewOverlay?.Value ?? false;
+            // Resolve scene FIRST so we can short-circuit work when not on
+            // the Start scene. Cheap — single accessor, no allocation.
+            string sceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name ?? "";
+            bool onNewGameScreen = sceneName.Equals("Start", StringComparison.OrdinalIgnoreCase);
+
+            // Lazy retry of FF sprite/font lookup. Throttled to once per
+            // REBIND_INTERVAL_FRAMES frames AND gated to the Start scene
+            // because FF's New Game assets only exist there. Without
+            // throttling, Resources.FindObjectsOfTypeAll<Sprite>() runs
+            // per-frame, allocating large arrays that trigger periodic
+            // (~3s cadence) GC stutter during gameplay.
+            if (onNewGameScreen)
+            {
+                _rebindThrottle++;
+                if (_rebindThrottle >= REBIND_INTERVAL_FRAMES)
+                {
+                    _rebindThrottle = 0;
+                    if (!_spritesResolved) TryRebindSprites();
+                    if (!_fontResolved) TryRebindFont();
+                }
+            }
+
+            // Pangu-style visibility: only show when on Start scene AND
+            // the EnableMapPreviewRender pref is on AND the user has
+            // opened FF's Advanced Settings panel. The user can configure
+            // size/terrain/seed without the overlay showing; the preview
+            // appears the moment they expand Advanced Settings.
+            bool prefOn = RiversRestoredMod.ShowPreviewOverlay?.Value ?? false;
+            bool advancedOpen = onNewGameScreen && IsAdvancedSettingsPanelOpen();
+            bool wantVisible = onNewGameScreen && prefOn && advancedOpen;
+
+            // Auto-regen: detect changes to (map size, map type, seed)
+            // while the panel is open, and trigger a fresh preview after
+            // a short debounce. The first show (panel just opened with
+            // pref enabled) also triggers an initial gen.
+            HandleAutoRegen(wantVisible);
             if (_shadowRT.gameObject.activeSelf != wantVisible)
                 _shadowRT.gameObject.SetActive(wantVisible);
 
+            // Disable the Canvas + GraphicRaycaster on the root when not on
+            // the Start scene. Hiding the children alone leaves the
+            // raycaster active, which (at sortingOrder 1000) was beating
+            // FF's UI to pointer events and swallowing clicks on the Town
+            // Center confirm dialog. Disabling Canvas pulls us out of UI
+            // event routing entirely. Cached graphicRaycaster lookup at
+            // BuildHierarchy time so we don't GetComponent every frame.
+            if (_canvas != null && _canvas.enabled != onNewGameScreen)
+                _canvas.enabled = onNewGameScreen;
+            if (_graphicRaycaster != null && _graphicRaycaster.enabled != onNewGameScreen)
+                _graphicRaycaster.enabled = onNewGameScreen;
+
             if (!wantVisible) return;
 
+            // Hold the preview content (image + captions) until the
+            // gen has produced both a render AND populated captions.
+            // Avoids the half-baked "empty caption + image" intermediate
+            // state. Until ready, we show the progress bar instead.
+            bool captionReady = PreviewGenWorker.CaptionReady;
+            bool showContent = captionReady && LatestPreview != null;
+
             // Rebind texture if it changed (renderer hands us a new
-            // Texture2D after each gen). When no texture exists, dim the
-            // RawImage to a near-black tint so the empty state reads
-            // intentionally rather than as a glitch.
+            // Texture2D after each gen). Hide the image entirely until
+            // showContent is true, so we don't flash a half-rendered
+            // texture before its caption appears.
             if (_previewImage != null)
             {
                 if (_previewImage.texture != LatestPreview)
                     _previewImage.texture = LatestPreview;
-                _previewImage.color = LatestPreview != null
-                    ? Color.white
-                    : new Color(0.10f, 0.10f, 0.12f, 1f);
+                if (showContent)
+                {
+                    _previewImage.color = Color.white;
+                }
+                else
+                {
+                    // Fully transparent so the progress bar is the
+                    // visible element on the dark backdrop.
+                    _previewImage.color = new Color(0f, 0f, 0f, 0f);
+                }
             }
+
+            // Drive the progress bar.
+            UpdateProgressBar(showContent);
 
             // Caption refresh: split-column display when preview exists,
             // single centered hint when empty. Toggle the COMPONENT's
@@ -144,20 +274,23 @@ namespace RiversRestored.Patches
             // TMP and the 3 split TMPs are all in the same GameObject
             // tree, so deactivating the parent would hide the children
             // too.
-            bool hasPreview = LatestPreview != null;
+            // Caption visibility now follows showContent (= captionReady
+            // AND LatestPreview != null). The empty-state legacy TMP
+            // is no longer used for "Generating preview…" — the
+            // progress bar handles that. Disable all caption TMPs
+            // when content isn't ready.
             if (_captionText != null)
-                _captionText.enabled = !hasPreview;
+                _captionText.enabled = false;
             if (_captionLeftText != null)
-                _captionLeftText.enabled = hasPreview;
+                _captionLeftText.enabled = showContent;
             if (_captionMidText != null)
-                _captionMidText.enabled = hasPreview;
+                _captionMidText.enabled = showContent;
             if (_captionRightText != null)
-                _captionRightText.enabled = hasPreview;
+                _captionRightText.enabled = showContent;
 
-            if (!hasPreview)
+            if (!showContent)
             {
-                if (_captionText != null && _captionText.text != "Click PREVIEW to generate")
-                    _captionText.text = "Click PREVIEW to generate";
+                // No-op — progress bar is the visible element.
             }
             else
             {
@@ -184,7 +317,7 @@ namespace RiversRestored.Patches
             scaler.referenceResolution = new Vector2(1920f, 1080f);
             scaler.matchWidthOrHeight = 0.5f;  // balance width and height
 
-            gameObject.AddComponent<GraphicRaycaster>();  // not strictly needed
+            _graphicRaycaster = gameObject.AddComponent<GraphicRaycaster>();  // not strictly needed
                                                           // but harmless
 
             // Lookup FF's sprite assets.
@@ -314,14 +447,435 @@ namespace RiversRestored.Patches
                 font, anchorMin: new Vector2(0.80f, 0f), anchorMax: new Vector2(1f, 1f),
                 align: TextAlignmentOptions.Left, sizePadding: 0);
 
-            // ── Generate-Preview button (top-right of panel) ──────────────
-            // Triggers an on-demand preview gen so the panel populates
-            // even when Pangu's preview-gen path isn't running. Sits as
-            // a small icon in the top-right corner of the backdrop.
-            BuildPreviewButton(backdropRT, font, borderSprite);
+            // No PREVIEW button — Pangu-style auto-regen drives the
+            // preview instead (see HandleAutoRegen). The preview appears
+            // automatically when the user opens the Advanced Settings
+            // panel with EnableMapPreviewRender on, and refreshes
+            // whenever map size / terrain type / seed changes.
+
+            // Pangu-style progress bar — sits inside the preview-image
+            // rect (centered), shown only when caption isn't ready
+            // yet. Hides as soon as CaptionReady flips true.
+            BuildProgressBar(previewRT, font);
 
             // Start hidden — Update() flips it on when conditions met.
             _shadowRT.gameObject.SetActive(false);
+        }
+
+        /// <summary>Pangu-style progress bar shown over the preview
+        /// image area while a preview gen is in flight. Two-tone
+        /// (background track + fill bar) with a centered label that
+        /// reads either the percent (when stage is readable) or
+        /// "Generating preview…" (indeterminate). Hides when
+        /// PreviewGenWorker.CaptionReady flips true.</summary>
+        private void BuildProgressBar(RectTransform parent, TMP_FontAsset? font)
+        {
+            _progressBarRoot = new GameObject("ProgressBar");
+            _progressBarRoot.transform.SetParent(parent, false);
+            var rt = _progressBarRoot.AddComponent<RectTransform>();
+            // Centered, ~60% wide, 18px tall.
+            rt.anchorMin = new Vector2(0.2f, 0.5f);
+            rt.anchorMax = new Vector2(0.8f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.anchoredPosition = Vector2.zero;
+            rt.sizeDelta = new Vector2(0f, 18f);
+
+            // Background track.
+            var trackImg = _progressBarRoot.AddComponent<Image>();
+            trackImg.color = new Color(0.05f, 0.05f, 0.07f, 0.85f);
+            trackImg.raycastTarget = false;
+
+            // Fill — child rect that we resize per frame in Update.
+            var fillGO = new GameObject("Fill");
+            fillGO.transform.SetParent(rt, false);
+            _progressBarFill = fillGO.AddComponent<RectTransform>();
+            _progressBarFill.anchorMin = new Vector2(0f, 0f);
+            _progressBarFill.anchorMax = new Vector2(0f, 1f);  // width=0 initially
+            _progressBarFill.pivot = new Vector2(0f, 0.5f);
+            _progressBarFill.offsetMin = new Vector2(2f, 2f);
+            _progressBarFill.offsetMax = new Vector2(2f, -2f);
+            var fillImg = fillGO.AddComponent<Image>();
+            // Warm amber — readable on the dark track and similar to
+            // FF's resource-bar accent color.
+            fillImg.color = new Color(0.95f, 0.78f, 0.32f, 1f);
+            fillImg.raycastTarget = false;
+
+            // Centered label.
+            var lblGO = new GameObject("Label");
+            lblGO.transform.SetParent(rt, false);
+            var lblRT = lblGO.AddComponent<RectTransform>();
+            lblRT.anchorMin = Vector2.zero;
+            lblRT.anchorMax = Vector2.one;
+            lblRT.offsetMin = Vector2.zero;
+            lblRT.offsetMax = Vector2.zero;
+            _progressBarLabel = lblGO.AddComponent<TextMeshProUGUI>();
+            if (font != null) _progressBarLabel.font = font;
+            _progressBarLabel.alignment = TextAlignmentOptions.Center;
+            _progressBarLabel.fontSize = 12;
+            _progressBarLabel.color = new Color(0.95f, 0.92f, 0.82f, 1f);
+            _progressBarLabel.text = "Generating preview…";
+            _progressBarLabel.raycastTarget = false;
+            _progressBarLabel.enableWordWrapping = false;
+            _progressBarLabel.overflowMode = TextOverflowModes.Truncate;
+
+            _progressBarRoot.SetActive(false);
+        }
+
+        /// <summary>Drive the progress bar: show when content not ready,
+        /// hide when it is. Reads PreviewGenWorker.TryGetGenProgress for
+        /// the determinate value; falls back to a sliding-segment
+        /// indeterminate animation when the gen stage isn't readable.</summary>
+        private void UpdateProgressBar(bool showContent)
+        {
+            if (_progressBarRoot == null) return;
+            bool wantBar = !showContent;
+            if (_progressBarRoot.activeSelf != wantBar)
+                _progressBarRoot.SetActive(wantBar);
+            if (!wantBar)
+            {
+                _smoothedProgress = 0f;  // reset for next gen
+                return;
+            }
+
+            float p = PreviewGenWorker.TryGetGenProgress();
+
+            // Stall detection: if the determinate value hasn't advanced
+            // for STALL_TO_INDETERMINATE_SECONDS, fall through to the
+            // indeterminate animation. Most common case: soft-restart
+            // tearing down the previous gen's coroutines, where stage
+            // freezes at whatever value it had when StopAllCoroutines
+            // fired. The user sees a moving bar instead of a frozen
+            // determinate bar at e.g. 62%.
+            bool stalled = false;
+            if (p >= 0f)
+            {
+                if (Mathf.Abs(p - _lastProgressValue) > 0.001f)
+                {
+                    _lastProgressValue = p;
+                    _lastProgressMoveAt = Time.unscaledTime;
+                }
+                else if (Time.unscaledTime - _lastProgressMoveAt > STALL_TO_INDETERMINATE_SECONDS)
+                {
+                    stalled = true;
+                }
+            }
+            else
+            {
+                _lastProgressValue = -1f;
+            }
+
+            if (p >= 0f && !stalled)
+            {
+                // Determinate: smooth toward target so the bar doesn't
+                // pop between stage reads. Lerp factor ~6/sec means
+                // ~6% per second per 0.1 of delta — feels responsive
+                // but not jittery.
+                _smoothedProgress = Mathf.Lerp(_smoothedProgress, p, Time.unscaledDeltaTime * 6f);
+                if (_progressBarFill != null)
+                {
+                    // Reset min in case we were in indeterminate mode.
+                    var min = _progressBarFill.anchorMin;
+                    min.x = 0f;
+                    _progressBarFill.anchorMin = min;
+                    var max = _progressBarFill.anchorMax;
+                    max.x = Mathf.Clamp01(_smoothedProgress);
+                    _progressBarFill.anchorMax = max;
+                }
+                if (_progressBarLabel != null)
+                {
+                    int pct = Mathf.RoundToInt(_smoothedProgress * 100f);
+                    _progressBarLabel.text = $"Generating preview… {pct}%";
+                }
+            }
+            else
+            {
+                // Indeterminate: a 25%-wide segment slides L→R→L
+                // across the track. Phase advances at ~0.6/sec so a
+                // full sweep takes ~3.3 s.
+                _indeterminatePhase += Time.unscaledDeltaTime * 0.6f;
+                if (_indeterminatePhase > 1f) _indeterminatePhase -= 2f;  // wrap to -1..1
+                float ping = Mathf.Abs(_indeterminatePhase);  // 0..1..0 triangular
+                if (_progressBarFill != null)
+                {
+                    const float segWidth = 0.25f;
+                    float min = ping * (1f - segWidth);
+                    float max = min + segWidth;
+                    var aMin = _progressBarFill.anchorMin;
+                    var aMax = _progressBarFill.anchorMax;
+                    aMin.x = min;
+                    aMax.x = max;
+                    _progressBarFill.anchorMin = aMin;
+                    _progressBarFill.anchorMax = aMax;
+                }
+                if (_progressBarLabel != null && _progressBarLabel.text != "Generating preview…")
+                    _progressBarLabel.text = "Generating preview…";
+            }
+        }
+
+        /// <summary>True when FF's Advanced Settings panel is currently
+        /// open. The panel sits at
+        ///   Canvas/Main Panel/StartMenu_DifficultySelect/.../Main Panel/Advanced Settings Panel
+        /// and has a CanvasGroup whose alpha lerps to 1 + interactable=true
+        /// when expanded (FF's UIStartMenu_DifficultySelect.OnAdvancedSettings
+        /// at Assembly-CSharp.cs:288663). We cache the CanvasGroup ref
+        /// and just read alpha + interactable per frame.</summary>
+        private bool IsAdvancedSettingsPanelOpen()
+        {
+            // Gate the lookup to the Start scene — the panel only
+            // exists there. Without this, clicking Start before the
+            // panel binds would leave us doing
+            // Resources.FindObjectsOfTypeAll<CanvasGroup>() every 30
+            // frames forever in gameplay, allocating large arrays
+            // and triggering periodic GC stutter.
+            if (_advancedPanelGroup == null)
+            {
+                string sn = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name ?? "";
+                if (!sn.Equals("Start", StringComparison.OrdinalIgnoreCase)) return false;
+                _panelLookupThrottle++;
+                if (_panelLookupThrottle < PANEL_LOOKUP_INTERVAL_FRAMES) return false;
+                _panelLookupThrottle = 0;
+                _advancedPanelGroup = FindAdvancedPanelGroup();
+                if (_advancedPanelGroup == null) return false;
+            }
+            try
+            {
+                return _advancedPanelGroup.alpha > 0.5f && _advancedPanelGroup.interactable;
+            }
+            catch
+            {
+                _advancedPanelGroup = null;
+                return false;
+            }
+        }
+
+        /// <summary>One-time scene-walk lookup for the Advanced Settings
+        /// panel's CanvasGroup. Match by GameObject name "Advanced
+        /// Settings Panel" with a parent path that includes
+        /// StartMenu_DifficultySelect (so we don't grab some other
+        /// "Advanced Settings Panel" elsewhere in FF's UI).</summary>
+        private static CanvasGroup? FindAdvancedPanelGroup()
+        {
+            try
+            {
+                var all = Resources.FindObjectsOfTypeAll<CanvasGroup>();
+                foreach (var cg in all)
+                {
+                    if (cg == null || cg.gameObject == null) continue;
+                    if (cg.gameObject.name != "Advanced Settings Panel") continue;
+                    // Confirm it's under the New Game UI (StartMenu_DifficultySelect)
+                    // by walking up the parent chain.
+                    Transform? t = cg.transform.parent;
+                    bool underStartMenu = false;
+                    int hops = 0;
+                    while (t != null && hops < 10)
+                    {
+                        if (t.name == "StartMenu_DifficultySelect") { underStartMenu = true; break; }
+                        t = t.parent;
+                        hops++;
+                    }
+                    if (underStartMenu) return cg;
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>Pangu-style auto-regen. Tracks (mapSize, mapType,
+        /// seed) and the panel's open state. Triggers a fresh preview
+        /// when:
+        ///   • The panel transitions closed→open with the pref enabled
+        ///     (initial preview)
+        ///   • Any of the three settings changes while the panel is open
+        /// Each detected change resets a debounce timer (300 ms); once
+        /// the timer expires, fires PreviewGenWorker.TriggerPreviewSoftRestart
+        /// which cancel-and-restarts any in-flight gen so the latest
+        /// state always wins.</summary>
+        private void HandleAutoRegen(bool wantVisible)
+        {
+            try
+            {
+                if (!wantVisible)
+                {
+                    _wasPanelOpenAndEnabled = false;
+                    _changeDetectedAt = -1f;
+                    return;
+                }
+
+                // Read current settings:
+                //   mapSizeValue — static, cheap read.
+                //   seed text    — cached input field, .text accessor
+                //                  per frame (cheap; the expensive part
+                //                  was the FindObjectsOfTypeAll scan,
+                //                  which is now once-and-cached).
+                //
+                // The seed input field text covers all UI sources:
+                //   • User typing → input field text changes
+                //   • Randomize Button → UI's RerollMap writes new
+                //     SettingsToSeed string, updates input field
+                //   • Non-Custom map type click → triggers UI's
+                //     RerollMap (same path)
+                object? curSize = ReadStaticProp("SettingsManager", "mapSizeValue", "_mapSizeValue");
+                // Skip seed change detection while the user is actively
+                // typing in the input field — otherwise every keystroke
+                // re-fires a gen. Reroll button writes via
+                // SetTextWithoutNotify() which doesn't focus the field,
+                // so reroll detection works even with this gate. The
+                // typing case is caught when the field unfocuses (Enter
+                // or click elsewhere).
+                bool seedFieldIsTyping = _seedInputField != null && _seedInputField.isFocused;
+                string curSeedText = seedFieldIsTyping ? _lastSeedText : ReadCachedSeedFieldText();
+
+                // First show (panel just opened) — kick an initial gen.
+                // Also flip CaptionReady=false here so the panel shows
+                // the progress bar immediately instead of flashing the
+                // previous gen's image during the 300ms debounce window.
+                if (!_wasPanelOpenAndEnabled)
+                {
+                    _wasPanelOpenAndEnabled = true;
+                    _lastMapSize = curSize;
+                    _lastSeedText = curSeedText;
+                    _changeDetectedAt = Time.realtimeSinceStartup;
+                    PreviewGenWorker.ResetCaptionReady();
+                    return;
+                }
+
+                // Subsequent changes — reset debounce on each delta.
+                bool changed = !object.Equals(curSize, _lastMapSize)
+                               || curSeedText != _lastSeedText;
+                if (changed)
+                {
+                    _lastMapSize = curSize;
+                    _lastSeedText = curSeedText;
+                    _changeDetectedAt = Time.realtimeSinceStartup;
+                    return;
+                }
+
+                if (_changeDetectedAt > 0f
+                    && (Time.realtimeSinceStartup - _changeDetectedAt) >= DEBOUNCE_SECONDS)
+                {
+                    _changeDetectedAt = -1f;
+                    PreviewGenWorker.TriggerPreviewSoftRestart();
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning($"[RR][PreviewOverlay] HandleAutoRegen error: {ex.Message}");
+            }
+        }
+
+        /// <summary>Read a static property (or its underscored backing
+        /// field) on a type discovered via AccessTools.TypeByName.
+        /// Returns null on any failure — auto-regen tolerates nulls.</summary>
+        private static object? ReadStaticProp(string typeName, string propName, string backingFieldName)
+        {
+            try
+            {
+                var t = AccessTools.TypeByName(typeName);
+                if (t == null) return null;
+                var p = t.GetProperty(propName, BindingFlags.Public | BindingFlags.Static);
+                if (p != null)
+                {
+                    try { var v = p.GetValue(null); if (v != null) return v; } catch { }
+                }
+                var f = t.GetField(backingFieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (f != null)
+                {
+                    try { return f.GetValue(null); } catch { }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>Read an instance property on a singleton type:
+        /// looks up TypeByName(typeName), reads its static instanceProp,
+        /// then reads instance.propName (or backing field).</summary>
+        private static object? ReadInstanceProp(string typeName, string instanceProp, string propName, string backingFieldName)
+        {
+            try
+            {
+                var t = AccessTools.TypeByName(typeName);
+                if (t == null) return null;
+                var instProp = t.GetProperty(instanceProp, BindingFlags.Public | BindingFlags.Static);
+                var inst = instProp?.GetValue(null);
+                if (inst == null) return null;
+                var p = t.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance);
+                if (p != null)
+                {
+                    try { var v = p.GetValue(inst); if (v != null) return v; } catch { }
+                }
+                var f = t.GetField(backingFieldName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (f != null)
+                {
+                    try { return f.GetValue(inst); } catch { }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>Read the current seed text from FF's "Map Seed
+        /// InputField," using a cached ref to avoid per-frame
+        /// Resources.FindObjectsOfTypeAll allocation. The lookup is
+        /// throttled to once per 30 frames; if the cached ref goes
+        /// stale (destroyed), next lookup re-scans. This keeps the
+        /// hot path to a single property accessor per frame.</summary>
+        private string ReadCachedSeedFieldText()
+        {
+            // Cache hit — fast path.
+            if (_seedInputField != null)
+            {
+                try
+                {
+                    // Touch a trivial property to check if the underlying
+                    // GameObject was destroyed. If it has been, Unity's
+                    // null-overload returns true on the wrapper.
+                    if (_seedInputField.gameObject == null)
+                    {
+                        _seedInputField = null;
+                    }
+                    else
+                    {
+                        return _seedInputField.text ?? "";
+                    }
+                }
+                catch
+                {
+                    _seedInputField = null;
+                }
+            }
+
+            // Throttled scan path. Only fires when cache is cold.
+            _seedFieldLookupThrottle++;
+            if (_seedFieldLookupThrottle < SEED_FIELD_LOOKUP_INTERVAL_FRAMES) return "";
+            _seedFieldLookupThrottle = 0;
+
+            try
+            {
+                var all = Resources.FindObjectsOfTypeAll<TMP_InputField>();
+                foreach (var f in all)
+                {
+                    if (f == null || f.gameObject == null) continue;
+                    var n = f.gameObject.name;
+                    if (string.IsNullOrEmpty(n)) continue;
+                    if (n.IndexOf("seed", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    // Confirm it's the New Game seed field by walking
+                    // the parent chain — defensive against other
+                    // "seed"-named inputs that might exist elsewhere.
+                    Transform? t = f.transform;
+                    int hops = 0;
+                    while (t != null && hops < 12)
+                    {
+                        if (t.name == "StartMenu_DifficultySelect") { _seedInputField = f; break; }
+                        t = t.parent;
+                        hops++;
+                    }
+                    if (_seedInputField != null) break;
+                }
+            }
+            catch { }
+
+            return _seedInputField?.text ?? "";
         }
 
         /// <summary>Create one of the three caption-column TMP components.
@@ -360,63 +914,6 @@ namespace RiversRestored.Patches
             tmp.lineSpacing = -2;
             tmp.raycastTarget = false;
             return tmp;
-        }
-
-        /// <summary>Add a small "Generate Preview" button anchored to the
-        /// top-right corner of the panel. Clicking it triggers an on-demand
-        /// preview gen via <see cref="PreviewGenWorker.TriggerPreview"/>,
-        /// breaking the dependency on Pangu's preview-gen running.</summary>
-        private void BuildPreviewButton(RectTransform parent, TMP_FontAsset? font, Sprite? buttonSprite)
-        {
-            var btnGO = new GameObject("PreviewButton");
-            btnGO.transform.SetParent(parent, false);
-            var rt = btnGO.AddComponent<RectTransform>();
-            rt.anchorMin = new Vector2(1f, 1f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot = new Vector2(1f, 1f);
-            rt.anchoredPosition = new Vector2(-8f, -8f);
-            rt.sizeDelta = new Vector2(110f, 30f);
-
-            var bgImg = btnGO.AddComponent<Image>();
-            if (buttonSprite != null) { bgImg.sprite = buttonSprite; bgImg.type = Image.Type.Sliced; }
-            bgImg.color = new Color(0.18f, 0.18f, 0.22f, 0.95f);
-            bgImg.raycastTarget = true;
-
-            var btn = btnGO.AddComponent<Button>();
-            btn.targetGraphic = bgImg;
-
-            // Hover/press color states
-            var colors = btn.colors;
-            colors.normalColor = new Color(1f, 1f, 1f, 1f);
-            colors.highlightedColor = new Color(1.2f, 1.2f, 1.0f, 1f);
-            colors.pressedColor = new Color(0.7f, 0.7f, 0.7f, 1f);
-            colors.disabledColor = new Color(0.5f, 0.5f, 0.5f, 0.5f);
-            btn.colors = colors;
-
-            // Button label
-            var lblGO = new GameObject("Label");
-            lblGO.transform.SetParent(rt, false);
-            var lblRT = lblGO.AddComponent<RectTransform>();
-            lblRT.anchorMin = Vector2.zero;
-            lblRT.anchorMax = Vector2.one;
-            lblRT.offsetMin = Vector2.zero;
-            lblRT.offsetMax = Vector2.zero;
-            var lbl = lblGO.AddComponent<TextMeshProUGUI>();
-            if (font != null) lbl.font = font;
-            lbl.alignment = TextAlignmentOptions.Center;
-            lbl.fontSize = 13;
-            lbl.color = new Color(0.95f, 0.92f, 0.82f, 1f);
-            lbl.text = "PREVIEW";
-            lbl.raycastTarget = false;
-
-            btn.onClick.AddListener(() =>
-            {
-                try { PreviewGenWorker.TriggerPreview(); }
-                catch (Exception ex)
-                {
-                    MelonLogger.Warning($"[RR][PreviewOverlay] Preview button error: {ex.Message}");
-                }
-            });
         }
 
         /// <summary>Create a single corner ornament Image at a specified

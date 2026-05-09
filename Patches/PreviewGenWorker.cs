@@ -33,17 +33,90 @@ namespace RiversRestored.Patches
     internal static class PreviewGenWorker
     {
         private static bool _busy = false;
-        // Tracks whether RR initiated the Map scene load (vs. it was
-        // already loaded by FF/Pangu). Reserved for future use — V3
-        // doesn't unload the scene after each preview, but if we do
-        // later, this flag tells us whether unloading is appropriate.
-        #pragma warning disable CS0414
-        private static bool _mapSceneLoadedByUs = false;
-        #pragma warning restore CS0414
+        // Pangu-pattern: tracks whether RR triggered the Map scene load.
+        // When true, we MUST unload the scene before gameplay starts —
+        // otherwise the preview's mutated TGC pollutes the actual game's
+        // gen and hangs the load screen. Pangu does the same:
+        // _seedPreviewLoadedMapSceneForTemplate (line 3035) +
+        // StartSeedPreviewTemplateSceneUnloadIfNeeded (line 3204).
+        public static bool _mapSceneLoadedByUs = false;
+        // Pangu-pattern: set true when WE initiate a Map scene load,
+        // cleared by Plugin.OnSceneWasInitialized's discriminator. When
+        // FF re-initializes the Map scene with this flag false, that
+        // means FF is loading it for gameplay → tear down the worker.
+        // Mirrors Pangu's _seedPreviewTemplateSceneInitPending
+        // (Pangu_FF.decompiled.cs:929).
+        public static bool _sceneInitPending = false;
+        // Set by HardCancel — checked by the live coroutine so it bails
+        // out cleanly mid-gen instead of finishing and rendering against
+        // a worker that's about to be torn down.
+        private static bool _cancelled = false;
+        // True while tgc.GenSliced_Generate is executing for our preview.
+        // Read by RR's own Harmony patches so they can skip
+        // SCENE-MUTATING work (carving Unity Terrain, rebuilding the
+        // live WaterPlane) while still letting DATA-ONLY work proceed
+        // (adding river polygons to _generationData.waterAreas — the
+        // preview renderer needs that). Without this gate, the full
+        // pipeline run pollutes the Map scene with RR's modifications,
+        // and FF's gameplay flow then chokes when it adopts the
+        // mutated scene. Pangu doesn't have this problem because it
+        // doesn't inject into the gen pipeline; RR does.
+        public static bool IsPreviewActive { get; private set; } = false;
+
+        // Worker TG ref + stage field, exposed for the overlay's
+        // progress bar. Set when PreviewCoroutine acquires a worker;
+        // cleared by HardCancel + on graceful gen end. The stage field
+        // is the int 1..97 inside _generationData; reading it gives
+        // the gen pipeline's current stage for a Pangu-style progress
+        // bar (0→100%).
+        private static TerrainGenerator? _activeWorkerTG;
+        // Set by PreviewCoroutine the moment the LateCarvePostfix-time
+        // render fires AND BuildRichCaption populates the caption
+        // strings. The overlay gates panel content visibility on this
+        // so the user doesn't see a half-finished render with empty
+        // captions. Cleared at the start of every TriggerPreview.
+        public static bool CaptionReady { get; private set; } = false;
+
+        /// <summary>Flip the caption-ready flag back to false. Used by
+        /// the overlay on panel re-open to suppress the old preview's
+        /// image from flashing before the new gen starts.</summary>
+        public static void ResetCaptionReady() => CaptionReady = false;
+
+        /// <summary>Read the gen pipeline's current stage [0,1] for a
+        /// progress bar. Returns -1 if no preview is active or stage
+        /// can't be resolved (caller can render an indeterminate state
+        /// instead).</summary>
+        public static float TryGetGenProgress()
+        {
+            try
+            {
+                var tg = _activeWorkerTG;
+                if (tg == null) return -1f;
+                var gdField = AccessTools.Field(tg.GetType(), "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd == null) return -1f;
+                var stageField = gd.GetType().GetField("stage",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (stageField?.GetValue(gd) is int stage)
+                {
+                    // Pipeline is 1..97 stages. Clamp + normalize.
+                    return Mathf.Clamp01(stage / 97f);
+                }
+            }
+            catch { }
+            return -1f;
+        }
 
         /// <summary>Entry point — invoked from the PREVIEW button click.
         /// Kicks off a coroutine that handles the async scene load and
         /// gen stage sequence.</summary>
+        // Set by TriggerPreviewSoftRestart while a gen is in flight —
+        // the running coroutine's finally checks this and re-triggers
+        // a fresh preview. Used by the auto-regen UI loop so rapid
+        // slider changes always settle to the latest state without
+        // starting multiple gens on top of each other.
+        private static bool _pendingRestart = false;
+
         public static void TriggerPreview()
         {
             if (_busy)
@@ -63,8 +136,152 @@ namespace RiversRestored.Patches
             }
 
             _busy = true;
+            _cancelled = false;
+            // Reset the gate flag explicitly. The previous gen may have
+            // left it set if its polling loop hard-timed-out before the
+            // inner gen finished. Either way, this new gen takes
+            // ownership of it from here on.
+            IsPreviewActive = false;
+            // Reset the caption-ready signal so the overlay shows the
+            // "Generating preview…" empty-state until this gen's
+            // captions populate.
+            CaptionReady = false;
             host.StartCoroutine(PreviewCoroutine());
         }
+
+        /// <summary>Trigger a preview, cancel-and-restart-style. If a
+        /// preview gen is currently running, mark a pending restart;
+        /// the running coroutine's finally re-fires once it cleans up.
+        /// If no gen is running, fire immediately. Used by the auto-
+        /// regen UI loop where the user is dragging a slider — we want
+        /// to always settle to the *latest* state without queuing a
+        /// pile of stale gens.</summary>
+        public static void TriggerPreviewSoftRestart()
+        {
+            // Revert the overlay to the progress-bar empty state
+            // immediately. Without this, the user sees the previous
+            // preview lingering until the new one renders, which reads
+            // as "the app froze." Flipping CaptionReady here means the
+            // overlay's gate (showContent = CaptionReady && LatestPreview)
+            // becomes false next frame and the progress bar takes over.
+            CaptionReady = false;
+
+            if (_busy)
+            {
+                _pendingRestart = true;
+                _cancelled = true;
+                StopWorkerCoroutines();
+                Log("Soft restart requested mid-gen.");
+                return;
+            }
+            TriggerPreview();
+        }
+
+        /// <summary>True if there's still preview state that warrants a
+        /// HardCancel. Used by OnSceneWasInitialized to avoid running
+        /// HardCancel (and its StopWorkerCoroutines side-effect) when
+        /// there's nothing to clean up — otherwise we'd walk FF's fresh
+        /// gameplay Map scene and stop all of its gen coroutines.</summary>
+        public static bool HasActivePreviewState()
+        {
+            return _busy || _mapSceneLoadedByUs || _sceneInitPending || IsPreviewActive;
+        }
+
+        /// <summary>Force teardown of the preview worker. Mirrors Pangu's
+        /// CancelSeedPreviewBuild + DisposeSeedPreviewWorker
+        /// (Pangu_FF.decompiled.cs:2197, 3183). Called from:
+        ///   • StartNewGamePatch.Prefix — when user clicks Start
+        ///   • RiversRestoredMod.OnSceneWasInitialized — when FF (not us)
+        ///     re-initializes the Map scene for gameplay
+        ///   • TickUnloadWatchdog — belt-and-braces fallback
+        ///
+        /// Stops worker coroutines, sets the cancel flag so an in-flight
+        /// PreviewCoroutine bails out before rendering, optionally
+        /// unloads the Map scene we loaded.
+        ///
+        /// unload=false: caller (FF) is about to take ownership of the
+        ///   scene transition. Don't fight it — just stop our coroutines.
+        /// unload=true: caller wants the scene gone (e.g. UI hidden).</summary>
+        public static void HardCancel(bool unload)
+        {
+            try
+            {
+                _cancelled = true;
+                // Stop coroutines FIRST so the still-running inner gen
+                // (started by StartCoroutine inside tgc.GenSliced_Generate)
+                // can't fire any more late-stage hooks against the
+                // soon-to-be-unloaded Map scene.
+                StopWorkerCoroutines();
+                _busy = false;
+                _activeWorkerTG = null;
+                CaptionReady = false;
+                // CRITICAL: do NOT clear IsPreviewActive here when
+                // unloading. StopAllCoroutines doesn't preempt code
+                // that's mid-execution — a hook currently inside
+                // CarveAllRivers / ForceWaterPlaneRebuild will finish
+                // its current frame's work after the Stop call. If we
+                // cleared the gate now, those hooks would mutate the
+                // Map scene we're about to unload, leaving Unity to
+                // clean up 1.5M-cell heightmap modifications and dozens
+                // of orphan terrain/water assets — manifests as a 3+
+                // minute UnloadUnusedAssets stall during gameplay load.
+                // Instead, the UnloadMapScene coroutine clears the gate
+                // AFTER the unload completes (see below).
+                if (!unload)
+                {
+                    IsPreviewActive = false;
+                }
+                if (unload)
+                {
+                    // Unload regardless of _mapSceneLoadedByUs — if a "Map"
+                    // scene is currently loaded (whether we loaded it or
+                    // someone else did), it carries our preview's mutated
+                    // state and FF must NOT inherit it. The unload-async
+                    // op kicked off here completes well before FF's
+                    // gameplay flow reaches its own LoadSceneAsync("Map").
+                    var sc = SceneManager.GetSceneByName("Map");
+                    if (sc.IsValid() && sc.isLoaded)
+                    {
+                        var host = UnityEngine.Object.FindObjectOfType<PreviewOverlay>();
+                        if (host != null)
+                        {
+                            host.StartCoroutine(UnloadMapScene());
+                            Log("HardCancel: Map scene unload coroutine started.");
+                        }
+                        else
+                        {
+                            // Fallback — unload without coroutine driver.
+                            try { SceneManager.UnloadSceneAsync(sc); }
+                            catch (Exception ex) { Log($"HardCancel direct unload failed: {ex.Message}"); }
+                        }
+                    }
+                    else
+                    {
+                        _mapSceneLoadedByUs = false;
+                        _sceneInitPending = false;
+                    }
+                }
+                else
+                {
+                    _mapSceneLoadedByUs = false;
+                    _sceneInitPending = false;
+                }
+            }
+            catch (Exception ex) { Log($"HardCancel failed: {ex.Message}"); }
+        }
+
+        /// <summary>Hard-ceiling timeout per map size. Pangu's
+        /// GetSeedPreviewAttemptTimeoutSeconds (Pangu_FF.decompiled.cs:2606)
+        /// uses 8/12/16s for S/M/L, sized for Pangu's lighter gen. RR's
+        /// preview triggers RR's own Stage 38 RiverPaths injection,
+        /// RiverWaterAreaBuilder polygon stamping, etc. — significantly
+        /// heavier than vanilla. Empirically a Large map's full pipeline
+        /// runs ~25-35s with RR's hooks active. Use a generous 60s
+        /// ceiling so the flag-gate stays correct through completion.
+        /// If the gen is still running at the ceiling, IsPreviewActive
+        /// will deliberately remain set — see the polling loop in
+        /// PreviewCoroutine.</summary>
+        private static float PanguTimeoutFor(int mapSizeIdx) => 60f;
 
         private static IEnumerator PreviewCoroutine()
         {
@@ -89,6 +306,9 @@ namespace RiversRestored.Patches
                     }
                     Log($"Loaded 'Map' scene; using its TerrainGenerator on '{tg.gameObject.name}'.");
                 }
+
+                // Expose worker TG for the overlay's progress bar reader.
+                _activeWorkerTG = tg;
 
                 // ── Step 3: find/configure TerrainGeneratorController ──
                 var tgc = tg.GetComponent<TerrainGeneratorController>()
@@ -125,9 +345,10 @@ namespace RiversRestored.Patches
                 Log($"Decoded: terrainSeed={terrainSeed} themeId={themeId} " +
                     $"mountains={mountainValue} water={waterValue}");
 
-                // Read map size from SettingsManager.mapSizeValue (static).
-                int mapSizeIdx = TryReadMapSizeIndex();
-                Log($"MapSize index: {mapSizeIdx}");
+                // Read map size as TGC.Size enum — Pangu's exact source.
+                int mapSizeIdx;
+                object mapSizeEnum = TryReadMapSizeEnum(out mapSizeIdx);
+                Log($"MapSize: enum={mapSizeEnum} (caption idx {mapSizeIdx})");
 
                 // Resolve theme from themeId via GlobalAssets.mapTypeData.
                 object? theme = ResolveTheme(themeId);
@@ -136,48 +357,212 @@ namespace RiversRestored.Patches
                     Log($"Could not resolve theme for themeId={themeId} — gen may fail.");
                 }
 
+                // ── Preflight: ensure RuntimeScriptableObjectManager is
+                // initialized. GenerateInternal calls
+                // RuntimeScriptableObjectManager.CreateInstance<TerrainBiome>()
+                // on each biome container; without prior Init() it NREs at
+                // first call, which surfaces as "Object reference not set to
+                // an instance of an object" thrown from GenSliced_Generate's
+                // first MoveNext. Pangu does the same preflight (line 2412 →
+                // EnsureRuntimeScriptableObjectManagerInitialized).
+                EnsureRuntimeScriptableObjectManagerInitialized();
+
                 // Apply all the gen parameters to TGC + TG.
-                ApplyTgcGenParameters(tgc, terrainSeed, mapSizeIdx, theme,
+                ApplyTgcGenParameters(tgc, terrainSeed, mapSizeEnum, theme,
                     mountainValue, waterValue);
                 TrySetIsLoadedFalse(tgc);
+
+                // Configure TG.debugOptions — skip expensive stages we don't
+                // need for the preview (roads/trees/details/objects). Pangu
+                // does this exact same set (Pangu line 2453-2461).
+                ConfigureDebugOptions(tg);
 
                 // Reset our renderer's per-gen flag.
                 MapPreviewRenderer.RenderedThisGen = false;
 
-                // Pangu's full sequence after parameter application:
-                //   1. TGC.GenerateInternal(false)          — TGC-side init
-                //   2. TG.ResetGeneratedData()              — clear prior state
-                //   3. Configure TG.debugOptions            — skip expensive stages
-                //   4. TG.inGame = false                    — preview mode
-                //   5. TG.generating = true                 — flag for stages
-                //   6. Set TG.rng.Seed from terrainSettings — deterministic
-                //   7. TG.PreGenerate()                     — pre-stage init
-                //   8. Create fresh _generationData         — clean output container
-                //   9. TG.GenerateAsync()                   — RUN THE ACTUAL GEN
-                bool ok = InvokeGenerateInternal(tgc);
-                if (!ok)
-                    Log("GenerateInternal threw — continuing anyway.");
-                TryResetGeneratedData(tg);
-                ConfigureDebugOptions(tg);
-                SetWorkerFlag(tg, "inGame", false);
-                SetWorkerFlag(tg, "generating", true);
-                SetRngSeed(tg);
-                InvokeMethodIfPresent(tg, "PreGenerate");
-                CreateFreshGenerationData(tg);
-                ok = InvokeMethodIfPresent(tg, "GenerateAsync");
-                if (!ok)
-                    Log("GenerateAsync threw — preview will likely be empty.");
+                // ── Run the FULL Pangu-canonical pipeline ─────────────
+                //
+                // Pangu (Pangu_FF.decompiled.cs:2462) calls
+                // tgc.GenSliced_Generate(false) and drives the resulting
+                // coroutine to completion — including Sliced_OnGenerated
+                // and its Terrain2Builder + WaterPlane.Sliced_Rebuild
+                // calls. Pangu does NOT skip OnGenerated; the v3 belief
+                // that OnGenerated itself causes the gameplay-load hang
+                // was a misdiagnosis.
+                //
+                // The actual cause of the v2 hang was that the polluted
+                // Map scene stayed loaded when FF began its gameplay
+                // scene transition, and FF adopted the mutated
+                // TerrainGeneratorController. Pangu avoids this with
+                //   (a) StartSceneManager.StartNewGame prefix → HardCancel
+                //   (b) OnSceneWasInitialized("Map") discriminator
+                //       → HardCancel when FF (not us) re-inits the scene
+                // Both of those are now wired (StartNewGamePatch +
+                // RiversRestoredMod.OnSceneWasInitialized). Running the
+                // full pipeline here gives us pixel-parity with the
+                // actual game gen (no RNG drift, fully populated
+                // _generationData.areas / waterAreas / treeDensity).
+                //
+                // _cancelled is set by HardCancel — abort the drive
+                // instead of finishing on a worker that's being torn
+                // down.
+                Log("Starting full Pangu-canonical gen (tgc.GenSliced_Generate)…");
+                IEnumerator? official = null;
+                try
+                {
+                    var miFull = tgc.GetType().GetMethod("GenSliced_Generate",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                        null, new[] { typeof(bool) }, null);
+                    if (miFull == null)
+                    {
+                        Log("TGC.GenSliced_Generate(bool) not found — cannot run preview gen.");
+                    }
+                    else
+                    {
+                        official = miFull.Invoke(tgc, new object[] { false }) as IEnumerator;
+                        if (official == null)
+                            Log("GenSliced_Generate returned null enumerator.");
+                    }
+                }
+                catch (Exception ex) { Log($"GenSliced_Generate invoke failed: {ex.Message}"); }
+
+                if (official != null)
+                {
+                    float timeout = PanguTimeoutFor(mapSizeIdx);
+                    IsPreviewActive = true;
+                    bool genCompletedGracefully = false;
+                    bool captionFired = false;
+                    try
+                    {
+                        // Drive the outer tgc.GenSliced_Generate enumerator
+                        // first. NOTE: this finishes after ~1 step because
+                        // the outer's body does
+                        //   GenerateInternal(game);
+                        //   yield return StartCoroutine(tg.GenSliced_Generate(game));
+                        // — DriveCoroutineWithTimeout doesn't actually wait
+                        // on Unity Coroutine objects (it yields null and
+                        // advances), so the outer reports done once it has
+                        // kicked off the inner StartCoroutine. The real gen
+                        // work continues on that nested coroutine
+                        // independently. We then poll tg.generating to wait
+                        // for the inner to finish, keeping IsPreviewActive
+                        // true for the duration so RR's mutation patches
+                        // correctly stand down.
+                        yield return DriveCoroutineWithTimeout(official, "tgc.GenSliced_Generate (outer)", 2f);
+
+                        float waitStart = Time.realtimeSinceStartup;
+                        var generatingField = AccessTools.Field(tg.GetType(), "generating");
+                        int idleFrames = 0;
+                        while (true)
+                        {
+                            bool stillGenerating = false;
+                            try
+                            {
+                                if (generatingField != null)
+                                    stillGenerating = (bool)(generatingField.GetValue(tg) ?? false);
+                            }
+                            catch { stillGenerating = false; }
+
+                            // Soft-cancel exit: TriggerPreviewSoftRestart
+                            // (called by auto-regen on user input) sets
+                            // _cancelled and StopWorkerCoroutines. The
+                            // gen pipeline's coroutines are now dead but
+                            // tg.generating stays true forever (the line
+                            // that sets it false never ran). Without
+                            // this check we'd wait the full 60s timeout
+                            // every reroll — a visible 30-60s frozen-
+                            // looking bar.
+                            if (_cancelled)
+                            {
+                                Log("Polling loop saw _cancelled — bailing immediately.");
+                                break;
+                            }
+
+                            if (!stillGenerating)
+                            {
+                                // Allow a few idle frames for any final
+                                // post-Sliced_OnGenerated work that runs
+                                // synchronously after the flag flips.
+                                if (++idleFrames >= 3)
+                                {
+                                    genCompletedGracefully = true;
+                                    break;
+                                }
+                            }
+                            else
+                            {
+                                idleFrames = 0;
+                            }
+
+                            // Fire the caption build as soon as the
+                            // mid-pipeline render has populated
+                            // LastRiverCount / LastWaterPct — no need
+                            // to wait the full 15-30s for gen to finish.
+                            if (!captionFired && MapPreviewRenderer.RenderedThisGen)
+                            {
+                                captionFired = true;
+                                BuildRichCaption(rawSeed, mapSizeIdx, tg);
+                                CaptionReady = true;
+                                Log("Caption built early (right after preview render).");
+                            }
+
+                            float elapsed = Time.realtimeSinceStartup - waitStart;
+                            if (elapsed > timeout)
+                            {
+                                Log($"Inner gen wait HARD-timed out at {elapsed:0.0}s (tg.generating still {stillGenerating}). " +
+                                    "Leaving IsPreviewActive set — gen is still mutating the worker, RR patches must keep gating. " +
+                                    "Flag will clear on next preview start or HardCancel.");
+                                break;
+                            }
+                            yield return null;
+                        }
+                        Log($"Inner gen wait done in {(Time.realtimeSinceStartup - waitStart):0.00}s (graceful={genCompletedGracefully}).");
+                    }
+                    finally
+                    {
+                        // Only clear if gen completed cleanly. If we
+                        // bailed via timeout, the inner gen is STILL
+                        // running on a sibling coroutine — RR's stage
+                        // hooks will still fire. Clearing the gate now
+                        // would let those hooks (RiverCarver,
+                        // ForceWaterPlaneRebuild) mutate the live Map
+                        // scene, which then gets adopted by FF's
+                        // gameplay flow → 3-minute UnloadUnusedAssets
+                        // stall on Start click. Keep the gate set;
+                        // HardCancel + the next TriggerPreview reset it.
+                        if (genCompletedGracefully)
+                            IsPreviewActive = false;
+                    }
+                }
+
+                if (_cancelled)
+                {
+                    Log("Preview cancelled mid-gen — skipping render.");
+                    yield break;
+                }
 
                 DumpGeneratorState(tg);
 
-                MapPreviewRenderer.TryRender(tg, "PreviewButton");
+                // INTENTIONALLY no post-completion render here. The
+                // earlier mid-gen render fired by LateCarvePostfix
+                // (RiverSettingsPatch.cs:196) captures _generationData
+                // at the SAME pipeline phase as in-game gen's
+                // LateCarvePostfix, giving 1:1 preview-vs-gameplay
+                // parity. Re-rendering after Sliced_OnGenerated produced
+                // a slightly different image (post-smoothing, post-lake-
+                // bed adjustments) — visually striking ("preview went
+                // black and reloaded") and confusing because the
+                // resulting preview no longer matched what the user saw
+                // in-game. BuildRichCaption still runs below.
 
-                // Override caption with rich metadata: actual seed string,
-                // map size, biome, all 4 difficulty selections, river count,
-                // water%. The default caption built by MapPreviewRenderer
-                // is missing seed string + difficulty info that we can
-                // now read.
+                // Final caption build for any data that wasn't ready
+                // mid-gen. The early-fire above already populated the
+                // caption when the preview rendered — this is a
+                // belt-and-braces re-fire in case BuildRichCaption
+                // didn't get to run (e.g., gen hard-timed-out before
+                // RenderedThisGen flipped). Cheap to re-run.
                 BuildRichCaption(rawSeed, mapSizeIdx, tg);
+                CaptionReady = true;
 
                 Log("Preview gen complete.");
 
@@ -190,6 +575,25 @@ namespace RiversRestored.Patches
             finally
             {
                 _busy = false;
+                // NOTE: deliberately NOT clearing IsPreviewActive here.
+                // The inner-block conditional finally only clears it on
+                // graceful gen completion. If we bailed (cancel, error,
+                // hard timeout), the inner gen may still be running and
+                // we MUST keep RR's mutation patches gated. The flag is
+                // reset in three places: TriggerPreview start, HardCancel,
+                // and the inner conditional finally.
+                if (_pendingRestart)
+                {
+                    _pendingRestart = false;
+                    _cancelled = false;  // clear so next gen runs
+                    Log("Soft-restart firing.");
+                    var host2 = UnityEngine.Object.FindObjectOfType<PreviewOverlay>();
+                    if (host2 != null)
+                    {
+                        _busy = true;
+                        host2.StartCoroutine(PreviewCoroutine());
+                    }
+                }
             }
         }
 
@@ -210,6 +614,10 @@ namespace RiversRestored.Patches
             catch (Exception ex) { Log($"LoadSceneAsync failed: {ex.Message}"); yield break; }
             if (op == null) { Log("LoadSceneAsync returned null."); yield break; }
             _mapSceneLoadedByUs = true;
+            // Mirrors Pangu's _seedPreviewTemplateSceneInitPending — set
+            // before the scene's OnSceneWasInitialized hook fires so the
+            // discriminator in RiversRestoredMod knows the load is ours.
+            _sceneInitPending = true;
             while (!op.isDone) yield return null;
             Log("'Map' scene load complete.");
         }
@@ -217,14 +625,150 @@ namespace RiversRestored.Patches
         private static IEnumerator UnloadMapScene()
         {
             var sc = SceneManager.GetSceneByName("Map");
-            if (!sc.IsValid() || !sc.isLoaded) yield break;
+            if (!sc.IsValid() || !sc.isLoaded)
+            {
+                // Nothing to unload — clear gate and exit.
+                IsPreviewActive = false;
+                _mapSceneLoadedByUs = false;
+                _sceneInitPending = false;
+                yield break;
+            }
             AsyncOperation? op = null;
             try { op = SceneManager.UnloadSceneAsync(sc); }
-            catch (Exception ex) { Log($"UnloadSceneAsync failed: {ex.Message}"); yield break; }
-            if (op == null) yield break;
+            catch (Exception ex)
+            {
+                Log($"UnloadSceneAsync failed: {ex.Message}");
+                IsPreviewActive = false;
+                yield break;
+            }
+            if (op == null) { IsPreviewActive = false; yield break; }
             while (!op.isDone) yield return null;
             _mapSceneLoadedByUs = false;
-            Log("'Map' scene unloaded.");
+            _sceneInitPending = false;
+            // Clear the gate AFTER unload completes. Any in-flight hook
+            // that races to fire between StopWorkerCoroutines and this
+            // line still sees IsPreviewActive=true and bails. Once the
+            // scene is gone, the RR's hooks have nothing to run against
+            // anyway — clearing the gate is safe so FF's gameplay gen
+            // (which fires next on a fresh Map scene) can run normally.
+            IsPreviewActive = false;
+            Log("'Map' scene unloaded; preview gate cleared.");
+        }
+
+        /// <summary>Drive an inner gen coroutine with a hard wall-clock
+        /// timeout. Yields `null` between MoveNext calls instead of
+        /// forwarding the inner Coroutine wait — that lets us check the
+        /// timeout every frame even if the inner coroutine is stuck
+        /// waiting on a nested Unity Coroutine that faulted/orphaned.
+        /// Trade-off: nested StartCoroutine results aren't awaited
+        /// properly, so the inner gen may advance one frame faster than
+        /// it expected. For our sliced gen pipeline this is fine —
+        /// stages don't actually depend on cross-frame waits, they just
+        /// yield to amortize CPU across frames.</summary>
+        private static IEnumerator DriveCoroutineWithTimeout(IEnumerator inner, string label, float timeoutSeconds)
+        {
+            float startedAt = Time.realtimeSinceStartup;
+            int steps = 0;
+            while (true)
+            {
+                bool moved;
+                try { moved = inner.MoveNext(); }
+                catch (Exception ex)
+                {
+                    Log($"{label} threw at step {steps}: {ex.GetType().Name}: {ex.Message}");
+                    break;
+                }
+                if (!moved) break;
+                steps++;
+                if (Time.realtimeSinceStartup - startedAt > timeoutSeconds)
+                {
+                    Log($"{label} timeout at step {steps} after {timeoutSeconds:0.0}s.");
+                    break;
+                }
+                yield return null;
+            }
+            Log($"{label} done: {steps} steps in {(Time.realtimeSinceStartup - startedAt):0.00}s.");
+        }
+
+        /// <summary>Pangu-pattern unload trigger. Called every frame from
+        /// PreviewOverlay.Update. When the user clicks Start (gameplay
+        /// context activates — GameManager.terrainManager becomes non-null),
+        /// we stop our worker's coroutines and unload the Map scene we
+        /// loaded for previews. This prevents the preview's mutated TGC
+        /// from polluting the actual game's gen and hanging the load
+        /// screen. Mirrors Pangu's StartSeedPreviewTemplateSceneUnloadIfNeeded
+        /// (Pangu_FF.cs:3204).</summary>
+        public static void TickUnloadWatchdog(MonoBehaviour host)
+        {
+            // BELT-AND-BRACES fallback only. The primary cleanup paths
+            // are now StartNewGamePatch.Prefix (fires when user clicks
+            // Start) and RiversRestoredMod.OnSceneWasInitialized
+            // (fires when FF re-initializes the Map scene). This
+            // watchdog only triggers if both of those somehow missed —
+            // by then GameManager.terrainManager has been wired up,
+            // which means FF is mid-initialization. Don't try to
+            // unload at this point (the scene is now FF-owned), just
+            // stop any rogue coroutines and clear our flags.
+            if (!_mapSceneLoadedByUs) return;
+            if (_busy) return;  // mid-preview, don't yank the rug
+            if (!IsGameplayContextActive()) return;
+
+            Log("Watchdog: gameplay context active without prior cleanup — stopping coroutines and releasing scene flag (FF owns it now).");
+            StopWorkerCoroutines();
+            _mapSceneLoadedByUs = false;
+            _sceneInitPending = false;
+        }
+
+        /// <summary>Pangu's IsGameplayContextActive (line 1917): returns
+        /// true once GameManager.Instance has a terrainManager wired up,
+        /// i.e. the actual game's terrain is being initialized. This is
+        /// the signal that gameplay is starting and we must release the
+        /// preview's hold on the Map scene.</summary>
+        private static bool IsGameplayContextActive()
+        {
+            try
+            {
+                Type? gmType = AccessTools.TypeByName("GameManager");
+                if (gmType == null) return false;
+                var instProp = gmType.GetProperty("Instance",
+                    BindingFlags.Public | BindingFlags.Static);
+                var inst = instProp?.GetValue(null);
+                if (inst == null) return false;
+                var tmField = gmType.GetField("terrainManager",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var tmProp = tmField == null
+                    ? gmType.GetProperty("terrainManager",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    : null;
+                var tm = tmField?.GetValue(inst) ?? tmProp?.GetValue(inst);
+                return tm is UnityEngine.Object o && o != null;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Stop all coroutines on the worker TGC + TG before
+        /// scene unload. Pangu does the same (line 3159 StopSeedPreviewWorkerCoroutines).
+        /// Without this, in-flight Sliced_Rebuild coroutines can crash
+        /// when their target GameObjects get destroyed by the unload.</summary>
+        private static void StopWorkerCoroutines()
+        {
+            try
+            {
+                var sc = SceneManager.GetSceneByName("Map");
+                if (!sc.IsValid() || !sc.isLoaded) return;
+                var roots = sc.GetRootGameObjects();
+                if (roots == null) return;
+                foreach (var root in roots)
+                {
+                    if (root == null) continue;
+                    foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
+                    {
+                        try { if (mb != null) mb.StopAllCoroutines(); }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception ex) { Log($"StopWorkerCoroutines failed: {ex.Message}"); }
         }
 
         /// <summary>Find a TerrainGenerator inside the loaded "Map" scene.
@@ -324,44 +868,141 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Read map size index — preferring live UI slider value
-        /// over SettingsManager.mapSizeValue (which is stale until the
-        /// user clicks Start, similar to the difficulty fields). Returns
-        /// 1 (Medium) on any failure.</summary>
-        private static int TryReadMapSizeIndex()
+        /// <summary>Ensure FF's RuntimeScriptableObjectManager is initialized
+        /// so GenerateInternal can call CreateInstance&lt;TerrainBiome&gt;()
+        /// when duplicating biome assets. Mirrors Pangu line 3231 logic:
+        /// only call Init() when the manager's static list is null.</summary>
+        private static void EnsureRuntimeScriptableObjectManagerInitialized()
         {
-            // Prefer live UI value: the slider's .value reflects the
-            // user's CURRENT selection, before they click Start to
-            // commit it to SettingsManager.
             try
             {
-                var sliders = Resources.FindObjectsOfTypeAll<UnityEngine.UI.Slider>();
-                foreach (var s in sliders)
+                Type? rsmType = AccessTools.TypeByName("RuntimeScriptableObjectManager");
+                if (rsmType == null)
                 {
-                    if (s == null || !s.gameObject.activeInHierarchy) continue;
-                    var n = s.gameObject.name ?? "";
-                    if (n.IndexOf("MapSize", StringComparison.OrdinalIgnoreCase) >= 0)
+                    Log("RuntimeScriptableObjectManager type not found — skipping preflight.");
+                    return;
+                }
+
+                // Check if already initialized by inspecting the static list
+                // field (any field of List<...> type will do — Pangu probes
+                // the same field). If null, call Init() to populate.
+                bool needsInit = true;
+                FieldInfo? listField = null;
+                foreach (var f in rsmType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                {
+                    if (typeof(System.Collections.IList).IsAssignableFrom(f.FieldType))
                     {
-                        return Mathf.RoundToInt(s.value);
+                        listField = f;
+                        break;
+                    }
+                }
+                if (listField != null)
+                {
+                    try
+                    {
+                        var v = listField.GetValue(null);
+                        if (v != null) needsInit = false;
+                    }
+                    catch { needsInit = true; }
+                }
+
+                if (needsInit)
+                {
+                    var initMi = rsmType.GetMethod("Init",
+                        BindingFlags.Public | BindingFlags.Static);
+                    if (initMi != null)
+                    {
+                        initMi.Invoke(null, null);
+                        Log("RuntimeScriptableObjectManager.Init() called.");
+                    }
+                    else
+                    {
+                        Log("RuntimeScriptableObjectManager.Init() not found.");
+                    }
+                }
+                else
+                {
+                    Log("RuntimeScriptableObjectManager already initialized.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"EnsureRuntimeScriptableObjectManagerInitialized failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>Read map size as the TGC.Size enum — IDENTICAL to
+        /// Pangu's source-of-truth: <c>(Size)(int)SettingsManager.mapSizeValue</c>.
+        ///
+        /// SettingsManager.mapSizeValue is updated LIVE by the New Game UI's
+        /// slider callback (Assembly-CSharp.cs:288782 OnMapSizeChanged →
+        /// `mapSizeValue = (Size)(2 - num)`), so it reflects the user's
+        /// current selection without needing to read the slider directly.
+        /// The enum-aligned value (Large=0, Medium=1, Small=2) is stored,
+        /// so we can pass it straight to TGC.size with no inversion.
+        ///
+        /// Returns the enum boxed as object so callers can pass it to
+        /// reflection-set TGC.size without re-converting. Falls back to
+        /// Size.Medium (enum value 1) on any failure.</summary>
+        private static object TryReadMapSizeEnum(out int idxForCaption)
+        {
+            // FF's enum order is Large=0, Medium=1, Small=2. Caption mapping
+            // (0=Small..2=Large) is the slider/UI order, so we invert:
+            //   enum 0 (Large)  → caption idx 2
+            //   enum 1 (Medium) → caption idx 1
+            //   enum 2 (Small)  → caption idx 0
+            try
+            {
+                var smType = AccessTools.TypeByName("SettingsManager");
+                if (smType != null)
+                {
+                    // mapSizeValue is a STATIC PROPERTY in
+                    // SettingsManager (Assembly-CSharp.cs:100845), not a
+                    // field. Backing field is _mapSizeValue
+                    // (Assembly-CSharp.cs:100401). Earlier code tried
+                    // GetField("mapSizeValue") which returns null, falling
+                    // through to the default-Medium return at the bottom
+                    // — meaning the preview ALWAYS rendered at Medium
+                    // regardless of slider position. Read the property
+                    // first; fall back to the backing field as belt-and-
+                    // braces in case FF renames in a future patch.
+                    object? v = null;
+                    try
+                    {
+                        var prop = smType.GetProperty("mapSizeValue",
+                            BindingFlags.Public | BindingFlags.Static);
+                        v = prop?.GetValue(null);
+                    }
+                    catch { }
+                    if (v == null)
+                    {
+                        try
+                        {
+                            var f = smType.GetField("_mapSizeValue",
+                                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                            v = f?.GetValue(null);
+                        }
+                        catch { }
+                    }
+                    if (v != null)
+                    {
+                        int enumVal = v is Enum e ? Convert.ToInt32(e)
+                                    : v is byte b ? b
+                                    : v is int i  ? i
+                                    : 1;
+                        idxForCaption = Mathf.Clamp(2 - enumVal, 0, 2);
+                        return v;  // already a Size enum boxed
                     }
                 }
             }
             catch { }
-
-            // Fallback: stale SettingsManager static field.
-            try
-            {
-                var smType = AccessTools.TypeByName("SettingsManager");
-                if (smType == null) return 1;
-                var f = smType.GetField("mapSizeValue",
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                var v = f?.GetValue(null);
-                if (v is byte b) return b;
-                if (v is int i) return i;
-                if (v is Enum e) return Convert.ToInt32(e);
-            }
-            catch { }
-            return 1;
+            idxForCaption = 1;
+            // Default to Medium = enum value 1.
+            var sizeType = AccessTools.TypeByName("TerrainGeneratorController+Size")
+                          ?? AccessTools.TypeByName("TerrainGeneratorController.Size");
+            return sizeType != null
+                ? Enum.ToObject(sizeType, 1)
+                : (object)1;
         }
 
         /// <summary>Resolve a Terrain2Theme from a theme ID via
@@ -399,17 +1040,23 @@ namespace RiversRestored.Patches
         }
 
         /// <summary>Apply all the gen parameters to the worker TGC. Mirrors
-        /// the field set Pangu writes before calling GenerateInternal:
-        /// terrainType (from SettingsManager.mapType), seed, size, theme,
-        /// mountains, water, lakes (from SettingsManager.mapLakeValue).</summary>
+        /// the field set Pangu writes before calling GenSliced_Generate
+        /// (Pangu_FF.decompiled.cs:2438-2449): terrainType (from
+        /// SettingsManager.Instance.mapType), seed, size (already a Size
+        /// enum, no conversion needed), theme, mountains, water, lakes
+        /// (from SettingsManager.mapLakeValue).</summary>
         private static void ApplyTgcGenParameters(TerrainGeneratorController tgc,
-            int terrainSeed, int mapSizeIdx, object? theme,
+            int terrainSeed, object mapSizeEnum, object? theme,
             int mountainValue, int waterValue)
         {
             var tgcType = tgc.GetType();
             try
             {
                 // terrainType from SettingsManager.Instance.mapType.
+                // mapType is a property (Assembly-CSharp.cs:100701), not
+                // a field — same property-vs-field gotcha that hit
+                // mapSizeValue. Read property first, fall back to the
+                // _mapType backing field.
                 var smType = AccessTools.TypeByName("SettingsManager");
                 if (smType != null)
                 {
@@ -418,9 +1065,24 @@ namespace RiversRestored.Patches
                     var inst = instProp?.GetValue(null);
                     if (inst != null)
                     {
-                        var mtField = smType.GetField("mapType",
-                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        var mtVal = mtField?.GetValue(inst);
+                        object? mtVal = null;
+                        try
+                        {
+                            var mtProp = smType.GetProperty("mapType",
+                                BindingFlags.Public | BindingFlags.Instance);
+                            mtVal = mtProp?.GetValue(inst);
+                        }
+                        catch { }
+                        if (mtVal == null)
+                        {
+                            try
+                            {
+                                var mtField = smType.GetField("_mapType",
+                                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                mtVal = mtField?.GetValue(inst);
+                            }
+                            catch { }
+                        }
                         if (mtVal != null)
                         {
                             var ttField = AccessTools.Field(tgcType, "terrainType");
@@ -430,26 +1092,43 @@ namespace RiversRestored.Patches
                 }
 
                 SetTgcField(tgc, tgcType, "seed", terrainSeed);
-                // size is an enum — convert from int.
-                var sizeField = AccessTools.Field(tgcType, "size");
-                if (sizeField != null && sizeField.FieldType.IsEnum)
-                {
-                    sizeField.SetValue(tgc, Enum.ToObject(sizeField.FieldType, mapSizeIdx));
-                }
+                // mapSizeEnum is already a TGC.Size enum value boxed —
+                // assign directly. TryReadMapSizeEnum returns
+                // SettingsManager.mapSizeValue verbatim, which is the
+                // enum-aligned value the slider's OnMapSizeChanged
+                // callback writes (Assembly-CSharp.cs:288785).
+                SetTgcField(tgc, tgcType, "size", mapSizeEnum);
                 if (theme != null) SetTgcField(tgc, tgcType, "theme", theme);
                 SetTgcField(tgc, tgcType, "mountains", Mathf.Clamp01(mountainValue / 255f));
                 SetTgcField(tgc, tgcType, "water", Mathf.Clamp01(waterValue / 255f));
 
-                // lakes from static SettingsManager.mapLakeValue
+                // lakes from static SettingsManager.mapLakeValue.
+                // Property (Assembly-CSharp.cs:100785), not field.
+                // Same bug as mapSizeValue/mapType.
                 if (smType != null)
                 {
-                    var lakesF = smType.GetField("mapLakeValue",
-                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                    var lakesV = lakesF?.GetValue(null);
+                    object? lakesV = null;
+                    try
+                    {
+                        var lakesProp = smType.GetProperty("mapLakeValue",
+                            BindingFlags.Public | BindingFlags.Static);
+                        lakesV = lakesProp?.GetValue(null);
+                    }
+                    catch { }
+                    if (lakesV == null)
+                    {
+                        try
+                        {
+                            var lakesF = smType.GetField("_mapLakeValue",
+                                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                            lakesV = lakesF?.GetValue(null);
+                        }
+                        catch { }
+                    }
                     if (lakesV != null) SetTgcField(tgc, tgcType, "lakes", lakesV);
                 }
 
-                Log($"Applied TGC params: seed={terrainSeed} size={mapSizeIdx} " +
+                Log($"Applied TGC params: seed={terrainSeed} size={mapSizeEnum} " +
                     $"theme={(theme != null ? theme.GetType().Name : "null")} " +
                     $"mountains={mountainValue} water={waterValue}");
             }
