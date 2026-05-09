@@ -91,13 +91,6 @@ namespace RiversRestored.Patches
                 }
 
                 // ── Step 3: find/configure TerrainGeneratorController ──
-                // Pangu's pattern: set TGC.terrainType from SettingsManager,
-                // set seed/size, configure debugOptions, then invoke
-                // TGC.GenerateInternal(false) which orchestrates the full
-                // pipeline correctly. Calling individual TG stage methods
-                // produces NaN heightnoise because state isn't initialized
-                // properly — the controller's GenerateInternal handles all
-                // that prep work.
                 var tgc = tg.GetComponent<TerrainGeneratorController>()
                           ?? tg.GetComponentInParent<TerrainGeneratorController>()
                           ?? UnityEngine.Object.FindObjectOfType<TerrainGeneratorController>();
@@ -108,20 +101,45 @@ namespace RiversRestored.Patches
                 }
                 Log($"Using TerrainGeneratorController on '{tgc.gameObject.name}'.");
 
-                // Apply user's biome selection from FF's SettingsManager.
-                ApplyBiomeFromSettings(tgc);
-
-                string seed = TryReadSeedFromUI();
-                if (!string.IsNullOrEmpty(seed))
+                // ── Step 4: read seed from UI, decode all encoded values ──
+                // Pangu's insight: the seed string encodes terrainSeed +
+                // themeId + mountainValue + waterValue. SettingsManager
+                // .SeedToSettings(seedStr, ref ts, ref t, ref m, ref w)
+                // decodes them in one call. The user's biome/water/mountain
+                // sliders write into the seed; we just read the seed and
+                // get all the values for free.
+                string rawSeed = TryReadSeedFromUI();
+                if (string.IsNullOrEmpty(rawSeed))
                 {
-                    Log($"Seed from UI: '{seed}'");
-                    TrySetSeedOnController(tgc, seed);
+                    Log("No seed in UI input — can't generate preview.");
+                    yield break;
+                }
+                Log($"Seed from UI: '{rawSeed}'");
+
+                if (!TryDecodeSeedString(rawSeed, out int terrainSeed,
+                    out int themeId, out int mountainValue, out int waterValue))
+                {
+                    Log("Failed to decode seed string — can't generate preview.");
+                    yield break;
+                }
+                Log($"Decoded: terrainSeed={terrainSeed} themeId={themeId} " +
+                    $"mountains={mountainValue} water={waterValue}");
+
+                // Read map size from SettingsManager.mapSizeValue (static).
+                int mapSizeIdx = TryReadMapSizeIndex();
+                Log($"MapSize index: {mapSizeIdx}");
+
+                // Resolve theme from themeId via GlobalAssets.mapTypeData.
+                object? theme = ResolveTheme(themeId);
+                if (theme == null)
+                {
+                    Log($"Could not resolve theme for themeId={themeId} — gen may fail.");
                 }
 
-                // Force a fresh gen pass.
+                // Apply all the gen parameters to TGC + TG.
+                ApplyTgcGenParameters(tgc, terrainSeed, mapSizeIdx, theme,
+                    mountainValue, waterValue);
                 TrySetIsLoadedFalse(tgc);
-
-                // Skip expensive stages we don't need for preview.
                 ConfigureDebugOptions(tg);
 
                 // Reset our renderer's per-gen flag.
@@ -240,66 +258,169 @@ namespace RiversRestored.Patches
             return string.Empty;
         }
 
-        /// <summary>Read FF's SettingsManager.Instance.mapType and apply
-        /// it to the worker controller's terrainType field. Pangu does
-        /// this every preview run to honor the user's biome selection.</summary>
-        private static void ApplyBiomeFromSettings(TerrainGeneratorController tgc)
+        /// <summary>Decode the user's seed string into its component values
+        /// using FF's static <c>SettingsManager.SeedToSettings</c>. The
+        /// seed string encodes terrainSeed (int) + themeId (byte) +
+        /// mountainValue (byte) + waterValue (byte) in one string —
+        /// reading the seed gets all four UI values for free without
+        /// having to find/read each individual UI control.</summary>
+        private static bool TryDecodeSeedString(string rawSeed, out int terrainSeed,
+            out int themeId, out int mountainValue, out int waterValue)
+        {
+            terrainSeed = 1; themeId = 0; mountainValue = 0; waterValue = 0;
+            try
+            {
+                var smType = AccessTools.TypeByName("SettingsManager");
+                if (smType == null) { Log("SettingsManager type not found."); return false; }
+
+                // SeedToSettings(string, ref int, ref byte, ref byte, ref byte)
+                var m = smType.GetMethod("SeedToSettings",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (m == null) { Log("SettingsManager.SeedToSettings not found."); return false; }
+
+                // Build args: string + 4 ref values (boxed)
+                int ts = 1; byte b1 = 0, b2 = 0, b3 = 0;
+                object[] args = new object[] { rawSeed, ts, b1, b2, b3 };
+                m.Invoke(null, args);
+                terrainSeed = (int)args[1];
+                themeId = (byte)args[2];
+                mountainValue = (byte)args[3];
+                waterValue = (byte)args[4];
+                if (terrainSeed <= 0)
+                {
+                    Log("SeedToSettings returned terrainSeed <= 0 — invalid seed.");
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"TryDecodeSeedString failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>Read SettingsManager.mapSizeValue (static). Returns
+        /// 1 (Medium) on any failure.</summary>
+        private static int TryReadMapSizeIndex()
         {
             try
             {
                 var smType = AccessTools.TypeByName("SettingsManager");
-                if (smType == null) { Log("SettingsManager type not found."); return; }
-                var instProp = smType.GetProperty("Instance",
-                    BindingFlags.Public | BindingFlags.Static);
-                var inst = instProp?.GetValue(null);
-                if (inst == null)
-                {
-                    // Try UnitySingletonPersistent<SettingsManager>.Instance
-                    var uspType = AccessTools.TypeByName("UnitySingletonPersistent`1")
-                                  ?.MakeGenericType(smType);
-                    var uspInst = uspType?.GetProperty("Instance",
-                        BindingFlags.Public | BindingFlags.Static);
-                    inst = uspInst?.GetValue(null);
-                }
-                if (inst == null) { Log("SettingsManager.Instance is null."); return; }
-                var mapTypeField = smType.GetField("mapType",
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                var mapTypeProp = smType.GetProperty("mapType",
-                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                object? mapType = mapTypeField?.GetValue(inst) ?? mapTypeProp?.GetValue(inst);
-                if (mapType == null) { Log("SettingsManager.mapType is null."); return; }
-
-                var tgcTerrainTypeField = AccessTools.Field(tgc.GetType(), "terrainType");
-                var tgcTerrainTypeProp = tgc.GetType().GetProperty("terrainType");
-                if (tgcTerrainTypeField != null) tgcTerrainTypeField.SetValue(tgc, mapType);
-                else if (tgcTerrainTypeProp != null) tgcTerrainTypeProp.SetValue(tgc, mapType);
-                Log($"Set TGC.terrainType = {mapType}");
+                if (smType == null) return 1;
+                var f = smType.GetField("mapSizeValue",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                var v = f?.GetValue(null);
+                if (v is byte b) return b;
+                if (v is int i) return i;
+                if (v is Enum e) return Convert.ToInt32(e);
             }
-            catch (Exception ex) { Log($"ApplyBiomeFromSettings failed: {ex.Message}"); }
+            catch { }
+            return 1;
         }
 
-        /// <summary>Set TGC.seed (or .seedText) from the UI value.</summary>
-        private static void TrySetSeedOnController(TerrainGeneratorController tgc, string seedText)
+        /// <summary>Resolve a Terrain2Theme from a theme ID via
+        /// <c>GlobalAssets.mapTypeData.GetMapThemeFromID(themeId, false)</c>.
+        /// Required input to TGC.theme — without it, GenerateInternal NREs.</summary>
+        private static object? ResolveTheme(int themeId)
         {
             try
             {
-                foreach (var name in new[] { "seed", "Seed", "currentMapSeed" })
+                var gaType = AccessTools.TypeByName("GlobalAssets");
+                if (gaType == null) { Log("GlobalAssets type not found."); return null; }
+                var mtdField = gaType.GetField("mapTypeData",
+                    BindingFlags.Public | BindingFlags.Static);
+                var mtdProp = gaType.GetProperty("mapTypeData",
+                    BindingFlags.Public | BindingFlags.Static);
+                var mtd = mtdField?.GetValue(null) ?? mtdProp?.GetValue(null);
+                if (mtd == null) { Log("GlobalAssets.mapTypeData is null."); return null; }
+
+                var m = mtd.GetType().GetMethod("GetMapThemeFromID",
+                    new[] { typeof(byte), typeof(bool) });
+                if (m == null)
                 {
-                    var f = AccessTools.Field(tgc.GetType(), name);
-                    if (f == null) continue;
-                    if (f.FieldType == typeof(string)) { f.SetValue(tgc, seedText); return; }
-                    if (f.FieldType == typeof(int) && int.TryParse(seedText, out var iv))
-                    { f.SetValue(tgc, iv); return; }
+                    Log("GetMapThemeFromID(byte, bool) not found on mapTypeData.");
+                    return null;
                 }
-                var p = tgc.GetType().GetProperty("seed");
-                if (p != null && p.CanWrite)
-                {
-                    if (p.PropertyType == typeof(string)) p.SetValue(tgc, seedText);
-                    else if (p.PropertyType == typeof(int) && int.TryParse(seedText, out var iv))
-                        p.SetValue(tgc, iv);
-                }
+                var theme = m.Invoke(mtd, new object[] { (byte)themeId, false });
+                if (theme == null) { Log($"GetMapThemeFromID({themeId}) returned null."); }
+                return theme;
             }
-            catch (Exception ex) { Log($"Seed-on-controller set failed: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                Log($"ResolveTheme failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>Apply all the gen parameters to the worker TGC. Mirrors
+        /// the field set Pangu writes before calling GenerateInternal:
+        /// terrainType (from SettingsManager.mapType), seed, size, theme,
+        /// mountains, water, lakes (from SettingsManager.mapLakeValue).</summary>
+        private static void ApplyTgcGenParameters(TerrainGeneratorController tgc,
+            int terrainSeed, int mapSizeIdx, object? theme,
+            int mountainValue, int waterValue)
+        {
+            var tgcType = tgc.GetType();
+            try
+            {
+                // terrainType from SettingsManager.Instance.mapType.
+                var smType = AccessTools.TypeByName("SettingsManager");
+                if (smType != null)
+                {
+                    var instProp = smType.GetProperty("Instance",
+                        BindingFlags.Public | BindingFlags.Static);
+                    var inst = instProp?.GetValue(null);
+                    if (inst != null)
+                    {
+                        var mtField = smType.GetField("mapType",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        var mtVal = mtField?.GetValue(inst);
+                        if (mtVal != null)
+                        {
+                            var ttField = AccessTools.Field(tgcType, "terrainType");
+                            ttField?.SetValue(tgc, mtVal);
+                        }
+                    }
+                }
+
+                SetTgcField(tgc, tgcType, "seed", terrainSeed);
+                // size is an enum — convert from int.
+                var sizeField = AccessTools.Field(tgcType, "size");
+                if (sizeField != null && sizeField.FieldType.IsEnum)
+                {
+                    sizeField.SetValue(tgc, Enum.ToObject(sizeField.FieldType, mapSizeIdx));
+                }
+                if (theme != null) SetTgcField(tgc, tgcType, "theme", theme);
+                SetTgcField(tgc, tgcType, "mountains", Mathf.Clamp01(mountainValue / 255f));
+                SetTgcField(tgc, tgcType, "water", Mathf.Clamp01(waterValue / 255f));
+
+                // lakes from static SettingsManager.mapLakeValue
+                if (smType != null)
+                {
+                    var lakesF = smType.GetField("mapLakeValue",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    var lakesV = lakesF?.GetValue(null);
+                    if (lakesV != null) SetTgcField(tgc, tgcType, "lakes", lakesV);
+                }
+
+                Log($"Applied TGC params: seed={terrainSeed} size={mapSizeIdx} " +
+                    $"theme={(theme != null ? theme.GetType().Name : "null")} " +
+                    $"mountains={mountainValue} water={waterValue}");
+            }
+            catch (Exception ex) { Log($"ApplyTgcGenParameters failed: {ex.Message}"); }
+        }
+
+        private static void SetTgcField(object tgc, Type tgcType, string fieldName, object value)
+        {
+            try
+            {
+                var f = AccessTools.Field(tgcType, fieldName);
+                if (f != null) { f.SetValue(tgc, value); return; }
+                var p = tgcType.GetProperty(fieldName);
+                if (p != null && p.CanWrite) p.SetValue(tgc, value);
+            }
+            catch { }
         }
 
         /// <summary>Force isLoaded=false on the controller so a fresh gen runs.</summary>
