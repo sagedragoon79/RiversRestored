@@ -28,7 +28,15 @@ namespace RiversRestored.Patches
     public class PreviewOverlay : MonoBehaviour
     {
         public static Texture2D? LatestPreview;
-        public static string LatestCaption = "";
+        // Caption split across 3 TMP components to allow:
+        //   - Left column: 2-line left-justified (seed/biome/size + river/water)
+        //   - Mid-right:   stacked (Resources / Wildlife)
+        //   - Far-right:   stacked (Maladies / Raiders)
+        // Each holds a 2-line string ('\n' between rows).
+        public static string LatestCaption = "";          // legacy fallback
+        public static string LatestCaptionLeft = "";
+        public static string LatestCaptionMid = "";
+        public static string LatestCaptionRight = "";
 
         // Layout — values in Canvas-space pixels at the reference resolution
         // (1920×1080). CanvasScaler will scale on different displays.
@@ -54,7 +62,10 @@ namespace RiversRestored.Patches
         private Image? _shadowImg;
         private Image? _borderImg;
         private RawImage? _previewImage;
-        private TextMeshProUGUI? _captionText;
+        private TextMeshProUGUI? _captionText;       // legacy/empty-state
+        private TextMeshProUGUI? _captionLeftText;   // Seed/Biome/Size + river/water
+        private TextMeshProUGUI? _captionMidText;    // Resources / Wildlife
+        private TextMeshProUGUI? _captionRightText;  // Maladies / Raiders
 
         private bool _initialized = false;
         // Sprites/font may not be loaded when Start() runs (FF lazy-loads
@@ -127,16 +138,31 @@ namespace RiversRestored.Patches
                     : new Color(0.10f, 0.10f, 0.12f, 1f);
             }
 
-            // Refresh caption — show a hint when there's no preview yet.
+            // Caption refresh: split-column display when preview exists,
+            // single centered hint when empty.
+            bool hasPreview = LatestPreview != null;
             if (_captionText != null)
+                _captionText.gameObject.SetActive(!hasPreview);
+            if (_captionLeftText != null)
+                _captionLeftText.gameObject.SetActive(hasPreview);
+            if (_captionMidText != null)
+                _captionMidText.gameObject.SetActive(hasPreview);
+            if (_captionRightText != null)
+                _captionRightText.gameObject.SetActive(hasPreview);
+
+            if (!hasPreview)
             {
-                string desired = LatestPreview == null
-                    ? "Click PREVIEW to generate"
-                    : (string.IsNullOrEmpty(LatestCaption)
-                       ? "Rivers Restored — preview"
-                       : LatestCaption);
-                if (_captionText.text != desired)
-                    _captionText.text = desired;
+                if (_captionText != null && _captionText.text != "Click PREVIEW to generate")
+                    _captionText.text = "Click PREVIEW to generate";
+            }
+            else
+            {
+                if (_captionLeftText != null && _captionLeftText.text != LatestCaptionLeft)
+                    _captionLeftText.text = LatestCaptionLeft;
+                if (_captionMidText != null && _captionMidText.text != LatestCaptionMid)
+                    _captionMidText.text = LatestCaptionMid;
+                if (_captionRightText != null && _captionRightText.text != LatestCaptionRight)
+                    _captionRightText.text = LatestCaptionRight;
             }
         }
 
@@ -253,6 +279,8 @@ namespace RiversRestored.Patches
             captionRT.anchoredPosition = new Vector2(0f, 4f);
             captionRT.sizeDelta = new Vector2(0f, CAPTION_H - 4f);
 
+            // Legacy/empty-state TMP — kept centered; only shown when no
+            // preview has been rendered yet (Update logic below).
             _captionText = captionGO.AddComponent<TextMeshProUGUI>();
             if (font != null) _captionText.font = font;
             _captionText.alignment = TextAlignmentOptions.Center;
@@ -261,7 +289,22 @@ namespace RiversRestored.Patches
             _captionText.text = "Rivers Restored — preview";
             _captionText.enableWordWrapping = false;
             _captionText.overflowMode = TextOverflowModes.Truncate;
-            _captionText.lineSpacing = -2;  // tighter spacing for 2-line
+            _captionText.lineSpacing = -2;
+            _captionText.raycastTarget = false;
+
+            // 3 split caption columns — left full-width, mid-right and
+            // far-right stacked. Each holds a 2-line string ('\n' between).
+            // Width split: left ~50%, mid 25%, right 25% — adjust if labels
+            // get truncated.
+            _captionLeftText = MakeCaptionColumn(captionRT, "CaptionLeft",
+                font, anchorMin: new Vector2(0f, 0f), anchorMax: new Vector2(0.5f, 1f),
+                align: TextAlignmentOptions.Left, sizePadding: 4);
+            _captionMidText = MakeCaptionColumn(captionRT, "CaptionMid",
+                font, anchorMin: new Vector2(0.5f, 0f), anchorMax: new Vector2(0.75f, 1f),
+                align: TextAlignmentOptions.Left, sizePadding: 0);
+            _captionRightText = MakeCaptionColumn(captionRT, "CaptionRight",
+                font, anchorMin: new Vector2(0.75f, 0f), anchorMax: new Vector2(1f, 1f),
+                align: TextAlignmentOptions.Left, sizePadding: 0);
 
             // ── Generate-Preview button (top-right of panel) ──────────────
             // Triggers an on-demand preview gen so the panel populates
@@ -271,6 +314,33 @@ namespace RiversRestored.Patches
 
             // Start hidden — Update() flips it on when conditions met.
             _shadowRT.gameObject.SetActive(false);
+        }
+
+        /// <summary>Create one of the three caption-column TMP components.
+        /// Each column holds a 2-line string and is anchored to a slice
+        /// of the caption strip's width.</summary>
+        private TextMeshProUGUI MakeCaptionColumn(RectTransform parent, string name,
+            TMP_FontAsset? font, Vector2 anchorMin, Vector2 anchorMax,
+            TextAlignmentOptions align, int sizePadding)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var rt = go.AddComponent<RectTransform>();
+            rt.anchorMin = anchorMin;
+            rt.anchorMax = anchorMax;
+            rt.offsetMin = new Vector2(sizePadding, 0f);
+            rt.offsetMax = new Vector2(-sizePadding, 0f);
+            var tmp = go.AddComponent<TextMeshProUGUI>();
+            if (font != null) tmp.font = font;
+            tmp.alignment = align;
+            tmp.fontSize = 12;
+            tmp.color = new Color(0.9f, 0.9f, 0.85f, 1f);
+            tmp.text = "";
+            tmp.enableWordWrapping = false;
+            tmp.overflowMode = TextOverflowModes.Truncate;
+            tmp.lineSpacing = -2;
+            tmp.raycastTarget = false;
+            return tmp;
         }
 
         /// <summary>Add a small "Generate Preview" button anchored to the

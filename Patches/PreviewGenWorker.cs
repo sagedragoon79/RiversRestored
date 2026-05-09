@@ -592,11 +592,18 @@ namespace RiversRestored.Patches
                 string wld = ReadDifficulty("animalDifficultyValue");
                 string raid = ReadDifficulty("raiderDifficultyValue");
 
-                string caption =
+                // 3 columns × 2 rows:
+                //   Left:    "Seed X · Biome · Size"     | "N river(s) · N% water"
+                //   Mid:     "Resources: T"              | "Wildlife: T"
+                //   Right:   "Maladies: T"               | "Raiders: T"
+                PreviewOverlay.LatestCaptionLeft =
                     $"Seed {rawSeed} · {biome} · {size}\n" +
-                    $"R:{res} · M:{mal} · W:{wld} · Rd:{raid} · {riverCount} river(s) · {waterPct}% water";
-
-                PreviewOverlay.LatestCaption = caption;
+                    $"{riverCount} river(s) · {waterPct}% water";
+                PreviewOverlay.LatestCaptionMid =
+                    $"Resources: {res}\nWildlife: {wld}";
+                PreviewOverlay.LatestCaptionRight =
+                    $"Maladies: {mal}\nRaiders: {raid}";
+                PreviewOverlay.LatestCaption = ""; // unused with split columns
             }
             catch (Exception ex)
             {

@@ -355,9 +355,17 @@ namespace RiversRestored.Patches
 
                 // Set caption for the overlay panel. Compact one-liner with
                 // the most useful at-a-glance gen metadata.
-                PreviewOverlay.LatestCaption =
-                    $"Seed {(string.IsNullOrEmpty(seedStr) ? "?" : seedStr)} · " +
-                    $"{presetStr} · {riverCount} river(s) · {waterPct}% water";
+                // Default split caption (PreviewGenWorker overrides with
+                // richer metadata after this returns when the user clicks
+                // PREVIEW; this default fires when the gen came from
+                // gameplay or Pangu's preview path).
+                string seedDisp = string.IsNullOrEmpty(seedStr) ? "?" : seedStr;
+                PreviewOverlay.LatestCaptionLeft =
+                    $"Seed {seedDisp} · {presetStr}\n" +
+                    $"{riverCount} river(s) · {waterPct}% water";
+                PreviewOverlay.LatestCaptionMid = "";
+                PreviewOverlay.LatestCaptionRight = "";
+                PreviewOverlay.LatestCaption = "";
 
                 Log($"Wrote preview ({OUT_W}x{OUT_H}, hn={hnW}x{hnH}, " +
                     $"waterAreas={waterAreaCount}, painted={waterPainted}, " +
