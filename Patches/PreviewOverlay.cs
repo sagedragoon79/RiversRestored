@@ -139,16 +139,20 @@ namespace RiversRestored.Patches
             }
 
             // Caption refresh: split-column display when preview exists,
-            // single centered hint when empty.
+            // single centered hint when empty. Toggle the COMPONENT's
+            // .enabled (not the GameObject's .activeSelf) — the legacy
+            // TMP and the 3 split TMPs are all in the same GameObject
+            // tree, so deactivating the parent would hide the children
+            // too.
             bool hasPreview = LatestPreview != null;
             if (_captionText != null)
-                _captionText.gameObject.SetActive(!hasPreview);
+                _captionText.enabled = !hasPreview;
             if (_captionLeftText != null)
-                _captionLeftText.gameObject.SetActive(hasPreview);
+                _captionLeftText.enabled = hasPreview;
             if (_captionMidText != null)
-                _captionMidText.gameObject.SetActive(hasPreview);
+                _captionMidText.enabled = hasPreview;
             if (_captionRightText != null)
-                _captionRightText.gameObject.SetActive(hasPreview);
+                _captionRightText.enabled = hasPreview;
 
             if (!hasPreview)
             {
