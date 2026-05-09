@@ -300,14 +300,18 @@ namespace RiversRestored.Patches
             // far-right stacked. Each holds a 2-line string ('\n' between).
             // Width split: left ~50%, mid 25%, right 25% — adjust if labels
             // get truncated.
+            // Width split: 60% / 20% / 20%. Left column is the longest
+            // ("Seed XXXXXXXXX · IdyllicValley · Medium") so it gets the
+            // most room. Mid (Resources/Wildlife) and far-right
+            // (Maladies/Raiders) only need ~12 chars at fontSize 12.
             _captionLeftText = MakeCaptionColumn(captionRT, "CaptionLeft",
-                font, anchorMin: new Vector2(0f, 0f), anchorMax: new Vector2(0.5f, 1f),
+                font, anchorMin: new Vector2(0f, 0f), anchorMax: new Vector2(0.60f, 1f),
                 align: TextAlignmentOptions.Left, sizePadding: 4);
             _captionMidText = MakeCaptionColumn(captionRT, "CaptionMid",
-                font, anchorMin: new Vector2(0.5f, 0f), anchorMax: new Vector2(0.75f, 1f),
+                font, anchorMin: new Vector2(0.60f, 0f), anchorMax: new Vector2(0.80f, 1f),
                 align: TextAlignmentOptions.Left, sizePadding: 0);
             _captionRightText = MakeCaptionColumn(captionRT, "CaptionRight",
-                font, anchorMin: new Vector2(0.75f, 0f), anchorMax: new Vector2(1f, 1f),
+                font, anchorMin: new Vector2(0.80f, 0f), anchorMax: new Vector2(1f, 1f),
                 align: TextAlignmentOptions.Left, sizePadding: 0);
 
             // ── Generate-Preview button (top-right of panel) ──────────────

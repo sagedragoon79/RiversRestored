@@ -580,7 +580,15 @@ namespace RiversRestored.Patches
                                     waterCells += Math.Max(0, (maxX - minX + 1)) * Math.Max(0, (maxZ - minZ + 1));
                                 }
                             }
-                            waterPct = totalCells > 0 ? (int)Math.Round(100.0 * waterCells / totalCells) : 0;
+                            // Clamp to 100 — bbox-area double-counts when
+                            // multiple WaterAreas overlap (e.g., a river
+                            // terminating in a lake), can otherwise produce
+                            // values > 100. Real fix would walk masks for
+                            // unique cells but the clamp is cheap and visually
+                            // correct.
+                            waterPct = totalCells > 0
+                                ? Math.Min(100, (int)Math.Round(100.0 * waterCells / totalCells))
+                                : 0;
                         }
                     }
                 }
