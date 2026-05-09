@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.3.0", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.4.0", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -254,6 +254,35 @@ namespace RiversRestored
         /// true.</summary>
         public static MelonPreferences_Entry<bool>? RiverPreferLakeWaterType { get; private set; }
 
+        /// <summary>When true, swaps the Pond WaterType's visual materials
+        /// (waterMaterial, foamMaterial, etc.) with LakeSmall's. Pond
+        /// classification still happens normally — small/marshy water
+        /// areas are still tagged as Pond — but they render with the blue
+        /// lake material instead of the green pond one. Side-effects every
+        /// Pond water body in the game session, not just RR-tracked rivers
+        /// or lakes. Persists for the rest of the process; no re-do per gen.
+        /// Defaults to false; opt-in for users who want guaranteed
+        /// blue/clear water everywhere.</summary>
+        public static MelonPreferences_Entry<bool>? PondUseLakeMaterial { get; private set; }
+
+        /// <summary>When true, RR renders a top-down preview image of each
+        /// generated map (heightmap as grayscale relief + water/rivers as
+        /// blue overlay) and writes it as a PNG to
+        /// <c>UserData/RiversRestored/Previews/&lt;seed&gt;_&lt;timestamp&gt;.png</c>.
+        /// Stage 2 of the in-game previewer feature — at this stage, the
+        /// preview is verified by the user opening the PNG file directly.
+        /// Default OFF — opt-in until the rendering is dialed in. No
+        /// gameplay impact; image is generated post-Stage-60 and is purely
+        /// observational.</summary>
+        public static MelonPreferences_Entry<bool>? EnableMapPreviewRender { get; private set; }
+
+        /// <summary>When true, displays the most-recently-rendered map
+        /// preview as an in-game overlay panel (right side of screen, mid-
+        /// vertical). Toggleable mid-session via F8 hotkey too. Requires
+        /// <see cref="EnableMapPreviewRender"/> to also be ON so a preview
+        /// actually exists to display.</summary>
+        public static MelonPreferences_Entry<bool>? ShowPreviewOverlay { get; private set; }
+
         // ── Preset value table ─────────────────────────────────────────────
         /// <summary>Bundle of preset values that override the granular cfg
         /// entries when <see cref="RiverPreset"/> is anything other than
@@ -372,17 +401,242 @@ namespace RiversRestored
             },
         };
 
+        // ── Per-preset live-tunable entry bundles ──────────────────────────
+        /// <summary>Holds MelonPreferences_Entry references for one preset's
+        /// 13 tunable values. Mirrors the field set in <see cref="RiverPresetValues"/>.
+        /// Populated in <see cref="OnInitializeMelon"/> via
+        /// <see cref="CreatePresetEntries(string, RiverPresetValues)"/> — one
+        /// per non-Custom preset. <see cref="GetEffectiveValues"/> reads from
+        /// the active preset's entries so the user can tune live in
+        /// MelonPreferences.cfg / KC's settings UI without needing a code
+        /// change. Defaults seeded from the hardcoded <see cref="Presets"/>
+        /// dictionary so first-launch behavior is unchanged.</summary>
+        public class RiverPresetEntries
+        {
+            public MelonPreferences_Entry<int> NumRivers = null!;
+            public MelonPreferences_Entry<int> MinPoints = null!;
+            public MelonPreferences_Entry<int> MinWidth = null!;
+            public MelonPreferences_Entry<int> MaxWidth = null!;
+            public MelonPreferences_Entry<int> InnerRadius = null!;
+            public MelonPreferences_Entry<int> OuterRadius = null!;
+            public MelonPreferences_Entry<int> BlobRadius = null!;
+            public MelonPreferences_Entry<int> BlobStride = null!;
+            public MelonPreferences_Entry<float> TrenchDepth = null!;
+            public MelonPreferences_Entry<int> SmoothPasses = null!;
+            public MelonPreferences_Entry<float> JitterAmplitude = null!;
+            public MelonPreferences_Entry<float> JitterFrequency = null!;
+            public MelonPreferences_Entry<int> FishingAreaMultiplier = null!;
+
+            public RiverPresetValues ToValues() => new RiverPresetValues
+            {
+                NumRivers = NumRivers.Value,
+                MinPoints = MinPoints.Value,
+                MinWidth = MinWidth.Value,
+                MaxWidth = MaxWidth.Value,
+                InnerRadius = InnerRadius.Value,
+                OuterRadius = OuterRadius.Value,
+                BlobRadius = BlobRadius.Value,
+                BlobStride = BlobStride.Value,
+                TrenchDepth = TrenchDepth.Value,
+                SmoothPasses = SmoothPasses.Value,
+                JitterAmplitude = JitterAmplitude.Value,
+                JitterFrequency = JitterFrequency.Value,
+                FishingAreaMultiplier = FishingAreaMultiplier.Value,
+            };
+        }
+
+        /// <summary>One <see cref="RiverPresetEntries"/> per non-Custom preset
+        /// mode. Custom mode continues to use the existing top-level granular
+        /// entries (NumRivers, MinPoints, etc.) — no change there.</summary>
+        public static readonly System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetEntries> PresetEntries
+            = new System.Collections.Generic.Dictionary<RiverPresetMode, RiverPresetEntries>();
+
+        // Slider descriptions — extracted to constants so per-preset entries
+        // can reuse the same explanatory text without duplication. Mirror the
+        // descriptions used by the Custom granular sliders below.
+        private const string DESC_NUM_RIVERS =
+            "How many rivers the mod will try to generate on each new map. " +
+            "1-2 = sparse, 4 = balanced, 6+ = water-rich. " +
+            "The actual number may be lower if a seed can't fit them all.";
+        private const string DESC_MIN_POINTS =
+            "Minimum length each river must reach to be accepted, in internal " +
+            "waypoints (each waypoint is roughly 1-3 cells of river path). " +
+            "Lower = shorter rivers allowed. 15 = lets short winding rivers through. " +
+            "Vanilla = 40, which is why vanilla maps almost never have rivers.";
+        private const string DESC_MIN_WIDTH =
+            "Minimum width of the visible flowing-water ribbon, in cells. " +
+            "0 = use vanilla (2-8). Set 4+ to force every river to be at least medium width.";
+        private const string DESC_MAX_WIDTH =
+            "Maximum width of the visible flowing-water ribbon, in cells. " +
+            "0 = use vanilla (2-8). Set 6+ to allow some grand rivers in the mix.";
+        private const string DESC_INNER_RADIUS =
+            "How wide the deep carved channel is, in cells (each cell ≈ 2.5m). " +
+            "3 = narrow stream, 6 = wide visible river, 8+ = grand river. " +
+            "Bump River Bank Width with this so banks don't get too steep.";
+        private const string DESC_OUTER_RADIUS =
+            "How far out the sloped banks extend before reaching natural ground, " +
+            "in cells from centerline. (Bank Width − Channel Width) is the slope " +
+            "distance: 1 cell = sharp drop-off, 4 cells = lake-like blend, " +
+            "6+ = very gradual. Must be ≥ Channel Width.";
+        private const string DESC_BLOB_RADIUS =
+            "Width of the visible water surface in cells from centerline. " +
+            "Match Channel Width so water fills the carved riverbed exactly. " +
+            "Higher = water spills onto bank slope (overflow look). " +
+            "Lower = clean carved-trench look with rocky shores.";
+        private const string DESC_BLOB_STRIDE =
+            "Internal density of the water-surface polygon along the river path. " +
+            "Lower = smoother shape with more building work. Higher = faster gen " +
+            "but may leave gaps on tight bends. 3 = default heavy overlap. " +
+            "Don't change unless gen feels slow.";
+        private const string DESC_TRENCH_DEPTH =
+            "How deep below the water surface the riverbed is dug, in metres. " +
+            "1.5 = visibility floor, 1.8 = lake-like, 2.5 = noticeably deeper, " +
+            "4+ = dramatic canyon rivers.";
+        private const string DESC_SMOOTH_PASSES =
+            "Smoothing passes applied to riverbanks after carving. " +
+            "0 = rough/blocky, 2 = mild, 6 = lake-like softness, 8+ = very gentle. " +
+            "Each pass adds a couple seconds to large-map gen.";
+        private const string DESC_JITTER_AMPLITUDE =
+            "How much rivers wiggle/snake between waypoints, in metres of " +
+            "perpendicular offset. 0 = perfectly straight, 1.5 = subtle natural " +
+            "curves, 5+ = strong snaking (can self-intersect on tight bends).";
+        private const string DESC_JITTER_FREQUENCY =
+            "How many curves fit between each pair of main waypoints. " +
+            "0.6 ≈ one and a bit curves per segment (looks natural). " +
+            "Higher = more zigzaggy, lower = sweeping arcs. " +
+            "Has no effect if Meander Strength is 0.";
+        private const string DESC_FISHING_MULTIPLIER =
+            "Boosts Fishing Shack productivity when placed next to a river. " +
+            "1 = no boost (river fishing feels weak), 4 = good balance, " +
+            "8+ = lush fishing economy. Lakes and ocean fishing are unaffected.";
+
+        /// <summary>Create a fresh MelonPreferences category for one preset
+        /// and populate it with all 13 tunable entries, defaulting to that
+        /// preset's hardcoded values. The category name is
+        /// <c>RiversRestored.&lt;PresetName&gt;</c> so cfg layout and KC's
+        /// UI grouping stay clean.</summary>
+        private static RiverPresetEntries CreatePresetEntries(string presetName, RiverPresetValues defaults)
+        {
+            // CreateCategory returns the existing category if the name is
+            // already registered, so re-init is safe. Category name uses
+            // underscore, not period, because MelonLoader 0.7.0 treats
+            // period-named categories as not-default-file-bound (entries
+            // live in memory, never persist to MelonPreferences.cfg).
+            // SetFilePath would normally be the fix but its signature in
+            // 0.7.0 throws NRE on us. Underscore-named categories follow
+            // the default file-binding convention and persist correctly.
+            var cat = MelonPreferences.CreateCategory($"RiversRestored_{presetName}");
+            var prefix = $"[{presetName}] ";
+
+            return new RiverPresetEntries
+            {
+                NumRivers = cat.CreateEntry("NumRivers", defaults.NumRivers,
+                    display_name: prefix + "Number of Rivers",
+                    description: DESC_NUM_RIVERS),
+                MinPoints = cat.CreateEntry("MinPoints", defaults.MinPoints,
+                    display_name: prefix + "Minimum River Length",
+                    description: DESC_MIN_POINTS),
+                MinWidth = cat.CreateEntry("MinWidth", defaults.MinWidth,
+                    display_name: prefix + "Min River Ribbon Width",
+                    description: DESC_MIN_WIDTH),
+                MaxWidth = cat.CreateEntry("MaxWidth", defaults.MaxWidth,
+                    display_name: prefix + "Max River Ribbon Width",
+                    description: DESC_MAX_WIDTH),
+                InnerRadius = cat.CreateEntry("InnerRadius", defaults.InnerRadius,
+                    display_name: prefix + "River Channel Width (full depth)",
+                    description: DESC_INNER_RADIUS),
+                OuterRadius = cat.CreateEntry("OuterRadius", defaults.OuterRadius,
+                    display_name: prefix + "River Bank Width (slope to ground)",
+                    description: DESC_OUTER_RADIUS),
+                BlobRadius = cat.CreateEntry("BlobRadius", defaults.BlobRadius,
+                    display_name: prefix + "Visible Water Width",
+                    description: DESC_BLOB_RADIUS),
+                BlobStride = cat.CreateEntry("BlobStride", defaults.BlobStride,
+                    display_name: prefix + "Water Surface Density (advanced)",
+                    description: DESC_BLOB_STRIDE),
+                TrenchDepth = cat.CreateEntry("TrenchDepth", defaults.TrenchDepth,
+                    display_name: prefix + "River Depth (metres below water)",
+                    description: DESC_TRENCH_DEPTH),
+                SmoothPasses = cat.CreateEntry("SmoothPasses", defaults.SmoothPasses,
+                    display_name: prefix + "Bank Smoothness",
+                    description: DESC_SMOOTH_PASSES),
+                JitterAmplitude = cat.CreateEntry("JitterAmplitude", defaults.JitterAmplitude,
+                    display_name: prefix + "River Meander Strength (metres)",
+                    description: DESC_JITTER_AMPLITUDE),
+                JitterFrequency = cat.CreateEntry("JitterFrequency", defaults.JitterFrequency,
+                    display_name: prefix + "River Meander Frequency",
+                    description: DESC_JITTER_FREQUENCY),
+                FishingAreaMultiplier = cat.CreateEntry("FishingAreaMultiplier", defaults.FishingAreaMultiplier,
+                    display_name: prefix + "River Fishing Productivity Boost",
+                    description: DESC_FISHING_MULTIPLIER),
+            };
+        }
+
         /// <summary>Resolve effective river-shape values, honoring the
         /// preset selector. When RiverPreset is Custom (or unset), values
         /// come from the individual granular cfg entries. Otherwise the
-        /// preset's bundled values win. Used by gen-time code in
-        /// RiverSettingsPatch / RiverCarver / RiverWaterAreaBuilder so
-        /// every gen-time read hits a single source of truth.</summary>
+        /// active preset's per-preset entries win (live-tunable in
+        /// MelonPreferences.cfg / KC). Falls back to the hardcoded
+        /// <see cref="Presets"/> dictionary if entries aren't yet populated
+        /// (defensive — should always exist after OnInitializeMelon).</summary>
+        /// <summary>Read FF's current TerrainGenerator's mapSettings.size
+        /// enum and return an index: 0=Small, 1=Medium, 2=Large. Returns 1
+        /// (Medium) on any failure so auto-scale falls back to the
+        /// preset's baseline values.</summary>
+        private static int ReadCurrentMapSizeIndex()
+        {
+            try
+            {
+                var tg = RiversRestored.Patches.RiverSettingsPatch.CachedGenerator;
+                if (tg == null) return 1;
+                var msField = HarmonyLib.AccessTools.Field(tg.GetType(), "mapSettings");
+                var ms = msField?.GetValue(tg);
+                if (ms == null) return 1;
+                var sizeField = ms.GetType().GetField("size",
+                    System.Reflection.BindingFlags.Public
+                    | System.Reflection.BindingFlags.NonPublic
+                    | System.Reflection.BindingFlags.Instance);
+                if (sizeField == null) return 1;
+                var v = sizeField.GetValue(ms);
+                if (v == null) return 1;
+                string n = v.ToString();
+                if (n.IndexOf("Small", System.StringComparison.OrdinalIgnoreCase) >= 0) return 0;
+                if (n.IndexOf("Large", System.StringComparison.OrdinalIgnoreCase) >= 0) return 2;
+                return 1;  // Medium or unknown
+            }
+            catch { return 1; }
+        }
+
         public static RiverPresetValues GetEffectiveValues()
         {
             var mode = RiverPreset?.Value ?? RiverPresetMode.IdyllicValley;
-            if (mode != RiverPresetMode.Custom && Presets.TryGetValue(mode, out var preset))
-                return preset;
+            if (mode != RiverPresetMode.Custom)
+            {
+                RiverPresetValues v;
+                if (PresetEntries.TryGetValue(mode, out var entries) && entries != null)
+                    v = entries.ToValues();
+                else if (Presets.TryGetValue(mode, out var preset))
+                    v = preset;
+                else goto custom;
+
+                // Auto-scale NumRivers and MinPoints by map size. Preset
+                // sliders are tuned for Medium as the baseline. Small maps
+                // can't fit as many or as long rivers; large maps benefit
+                // from more / longer ones to keep the same visual density.
+                // Factors empirically chosen — refine after testing.
+                int sizeIdx = ReadCurrentMapSizeIndex();
+                float numScale, minPtsScale;
+                switch (sizeIdx)
+                {
+                    case 0:  numScale = 0.7f; minPtsScale = 0.7f; break;  // Small
+                    case 2:  numScale = 1.3f; minPtsScale = 1.3f; break;  // Large
+                    default: numScale = 1.0f; minPtsScale = 1.0f; break;  // Medium / unknown
+                }
+                v.NumRivers = System.Math.Max(1, (int)System.Math.Round(v.NumRivers * numScale));
+                v.MinPoints = System.Math.Max(1, (int)System.Math.Round(v.MinPoints * minPtsScale));
+                return v;
+            }
+        custom:
             // Custom: pull from individual cfg entries (with safe fallbacks
             // so an uninitialized entry doesn't blow up gen).
             return new RiverPresetValues
@@ -493,6 +747,36 @@ namespace RiversRestored
                              "Pond water can look weird for rivers because it's " +
                              "tinted muddy-green and has lower transparency. Leave " +
                              "ON unless you specifically want green murky rivers.");
+
+            PondUseLakeMaterial = cat.CreateEntry("PondUseLakeMaterial", true,
+                display_name: "Force Pond Water to Render as Lake (Blue)",
+                description: "When ON (default): every Pond in the game session uses " +
+                             "the blue Lake water material instead of the green Pond " +
+                             "one. Pond classification is unchanged (small/marshy areas " +
+                             "still classify as Pond), only the visual material swaps. " +
+                             "Affects ALL ponds on every map. Recommended ON because " +
+                             "it also fixes the save/reload WaterType-orphan bug — " +
+                             "orphaned water polygons fall back to Pond's material, " +
+                             "so with this swap they render blue instead of invisible. " +
+                             "Set OFF if you want vanilla pond visual variety and don't " +
+                             "care about save/reload water visibility.");
+
+            EnableMapPreviewRender = cat.CreateEntry("EnableMapPreviewRender", false,
+                display_name: "[Beta] Render Map Previews to PNG",
+                description: "When ON: after each map gen, RR writes a top-down " +
+                             "preview image of the heightmap + rivers + lakes to " +
+                             "UserData/RiversRestored/Previews/<seed>_<timestamp>.png. " +
+                             "Useful for verifying RR's gen output without launching " +
+                             "into a settlement. Default OFF — opt-in until " +
+                             "rendering is dialed in.");
+
+            ShowPreviewOverlay = cat.CreateEntry("ShowPreviewOverlay", false,
+                display_name: "[Beta] Show Preview Overlay In-Game",
+                description: "When ON: the most-recently-rendered map preview " +
+                             "is displayed as an overlay panel on the right side " +
+                             "of the screen during play. Press F8 in-game to " +
+                             "toggle visibility. Requires Render Map Previews " +
+                             "to be ON so a preview exists to display.");
 
             NumRivers = cat.CreateEntry("NumRivers", 4,
                 display_name: "Number of Rivers",
@@ -664,6 +948,26 @@ namespace RiversRestored
                              "for diagnosis. Leave OFF for normal play — the log gets " +
                              "noisy fast.");
 
+            // ── Per-preset live-tunable entries ─────────────────────────────
+            // Create one MelonPreferences category per non-Custom preset, each
+            // with a full mirror of the 13 tunable fields. Defaults seed from
+            // the hardcoded Presets dictionary so first-launch behavior is
+            // unchanged. User can tune in-game (KC settings UI) or via cfg
+            // edits; gen-time reads route through GetEffectiveValues which
+            // prefers these entries over the hardcoded table.
+            foreach (var kvp in Presets)
+            {
+                try
+                {
+                    PresetEntries[kvp.Key] = CreatePresetEntries(kvp.Key.ToString(), kvp.Value);
+                }
+                catch (System.Exception ex)
+                {
+                    Log.Warning($"[RR] Failed to create per-preset entries for {kvp.Key}: {ex.Message}. " +
+                                $"Will fall back to hardcoded preset values for that mode.");
+                }
+            }
+
             // ── Apply granular-visibility based on cfg, and update on toggle ──
             ApplyGranularVisibility();
             try
@@ -685,11 +989,22 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.3.0 loaded. NumRivers={NumRivers.Value}, " +
+                // Pangu-pattern: prefix on StartSceneManager.StartNewGame
+                // so we tear down the preview worker BEFORE FF begins
+                // its gameplay scene transition. Without this, FF can
+                // adopt the preview's mutated TGC and hang at ~85%.
+                Patches.StartNewGamePatch.Apply(HarmonyInstance);
+                Log.Msg($"[RR] Rivers Restored 1.4.0 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.
                 KeepClarityIntegration.TryRegisterAll();
+
+                // Preview overlay GameObject is spawned later — see
+                // OnSceneWasInitialized below. Creating it here would
+                // happen before Unity has any loaded scene, which makes
+                // DontDestroyOnLoad fail and the MonoBehaviour never get
+                // its Start() called.
             }
             catch (System.Exception ex)
             {
@@ -747,8 +1062,80 @@ namespace RiversRestored
         /// Without this, a second new-map attempt in the same session would
         /// skip the override (thinking it already applied).
         /// </summary>
+        // Tracks whether the in-game preview overlay GameObject has been
+        // spawned. Done lazily on first scene load so Unity has actually
+        // initialized — spawning in OnInitializeMelon was too early and
+        // the MonoBehaviour never received Start().
+        private static bool _previewOverlaySpawned = false;
+
+        /// <summary>Pangu-pattern Map-scene discriminator. Mirrors
+        /// Pangu_FF.decompiled.cs:929. When the "Map" scene initializes:
+        ///   • If WE triggered the load (PreviewGenWorker._sceneInitPending),
+        ///     just clear the flag — the worker is mid-use.
+        ///   • Otherwise FF is loading Map for gameplay — tear down the
+        ///     preview worker NOW, before FF's terrain init runs against
+        ///     our mutated TerrainGeneratorController.
+        ///
+        /// This is the keystone of the cleanup discipline. Without it
+        /// the polluted TGC from the preview gets adopted by the
+        /// gameplay flow and hangs the load screen at ~85%.</summary>
+        public override void OnSceneWasInitialized(int buildIndex, string sceneName)
+        {
+            try
+            {
+                if (string.Equals(sceneName, "Map", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    if (Patches.PreviewGenWorker._sceneInitPending)
+                    {
+                        Patches.PreviewGenWorker._sceneInitPending = false;
+                        Log.Msg("[RR] Map scene init from our preview load — leaving worker alone.");
+                    }
+                    else if (Patches.PreviewGenWorker.HasActivePreviewState())
+                    {
+                        // FF is initializing Map (not us) AND we still
+                        // have preview state to clean up — tear it down
+                        // before FF's gameplay path proceeds. This branch
+                        // must NOT fire on FF's normal gameplay scene
+                        // load; otherwise StopWorkerCoroutines walks the
+                        // fresh Map scene and kills FF's gen coroutines,
+                        // hanging the load. The Start prefix's HardCancel
+                        // normally clears all preview state before this
+                        // hook fires for the gameplay scene, so we
+                        // expect this branch to run only when something
+                        // else (player aborted, edge cases) leaves
+                        // worker state behind.
+                        Log.Msg("[RR] Map scene init from FF with stale preview state — hard-cancelling.");
+                        Patches.PreviewGenWorker.HardCancel(unload: false);
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Log.Warning($"[RR] OnSceneWasInitialized hook failed: {ex.Message}");
+            }
+        }
+
         public override void OnSceneWasLoaded(int buildIndex, string sceneName)
         {
+            // First-scene-load: spawn the preview overlay GameObject. By
+            // now Unity has a real scene, so DontDestroyOnLoad works
+            // properly and Start() will fire.
+            if (!_previewOverlaySpawned)
+            {
+                _previewOverlaySpawned = true;
+                try
+                {
+                    var go = new UnityEngine.GameObject("RR_PreviewOverlay");
+                    go.AddComponent<RiversRestored.Patches.PreviewOverlay>();
+                    UnityEngine.Object.DontDestroyOnLoad(go);
+                    Log.Msg("[RR] Spawned preview overlay GameObject (deferred to first scene load).");
+                }
+                catch (System.Exception ex)
+                {
+                    Log.Warning($"[RR] Failed to spawn preview overlay: {ex.Message}");
+                }
+            }
+
             Patches.RiverSettingsPatch.ResetGuard();
             Patches.RiverPersistence.ResetForSceneLoad();
             Patches.FishingShackPatch.ResetForSceneLoad();

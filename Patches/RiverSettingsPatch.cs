@@ -189,6 +189,11 @@ namespace RiversRestored.Patches
             {
                 LogWaterAreaCount(__instance, __originalMethod?.Name ?? "?");
                 RiverCarver.CarveAllRivers(__instance);
+                // Render preview AFTER the carve so the heightnoise reflects
+                // the final carved channels and waterAreas is fully populated.
+                // No-op when EnableMapPreviewRender is off or already rendered
+                // this gen.
+                MapPreviewRenderer.TryRender(__instance, __originalMethod?.Name ?? "?");
             }
             catch (Exception ex)
             {
@@ -743,6 +748,7 @@ namespace RiversRestored.Patches
                 // injections get skipped with "Stage38 already ran this gen".
                 _stage38AlreadyRanThisGen = false;
                 _stage60AlreadyRanThisGen = false;
+                MapPreviewRenderer.RenderedThisGen = false;
                 RiverCarver.ResetGuard();
 
                 // Already matches? Silent no-op for the riverSettings mutation
@@ -787,6 +793,22 @@ namespace RiversRestored.Patches
                 if (RiversRestoredMod.MarkWaterTypesAsRiverEnd.Value)
                     MarkAllWaterTypesAsRiverEnd();
 
+                // ── One-shot Pond-vs-LakeSmall diagnostic dump ─────────────
+                // Always fires once per process to expose every visual-affecting
+                // field difference between the two WaterTypes. Used to identify
+                // why PondUseLakeMaterial's material swap alone doesn't fully
+                // recolor ponds — there are likely other fields (color, depth-fog,
+                // shoreline tint) that need swapping too.
+                DumpPondVsLakeFields();
+
+                // ── Optional: swap Pond's visual material for LakeSmall's ──
+                // Targeted "always-blue water" hack. Pond classification still
+                // happens normally (small water bodies still tagged Pond), but
+                // the rendering material is replaced so they look like lakes.
+                // Side-effects on every Pond in the game session, not just RR.
+                if (RiversRestoredMod.PondUseLakeMaterial?.Value ?? false)
+                    SwapPondToLakeMaterial();
+
                 // ── One-shot water/terrain settings dump ──────────────────
                 // Reflection-walks every field on waterSettings, riverSettings,
                 // baseSettings, mapSettings, biomeSettings, and per-WaterType
@@ -812,6 +834,7 @@ namespace RiversRestored.Patches
         {
             _stage38AlreadyRanThisGen = false;
             _stage60AlreadyRanThisGen = false;
+            MapPreviewRenderer.RenderedThisGen = false;
         }
 
         /// <summary>
@@ -980,6 +1003,210 @@ namespace RiversRestored.Patches
             catch (Exception ex)
             {
                 RiversRestoredMod.Log.Error($"[RR] MarkAllWaterTypesAsRiverEnd failed: {ex}");
+            }
+        }
+
+        // Tracks whether we've already swapped Pond's material to Lake's
+        // for this game session. WaterType is a ScriptableObject — once
+        // swapped, the change persists for the rest of the process. No
+        // need to re-do per gen.
+        private static bool _pondMaterialSwapped = false;
+
+        // Tracks whether the Pond-vs-LakeSmall side-by-side field dump has
+        // already fired this process. One-shot diagnostic.
+        private static bool _pondVsLakeDumped = false;
+
+        /// <summary>One-shot diagnostic: dumps every field on the Pond and
+        /// LakeSmall WaterTypes side-by-side, highlighting fields that
+        /// differ. Used to identify which fields beyond waterMaterial/
+        /// foamMaterial control the green-vs-blue render difference, so
+        /// SwapPondToLakeMaterial can be extended to cover them.
+        /// Fires before the swap so we capture original values.</summary>
+        private static void DumpPondVsLakeFields()
+        {
+            if (_pondVsLakeDumped) return;
+            try
+            {
+                Type wtType = AccessTools.TypeByName("TerrainGen.WaterType");
+                if (wtType == null) return;
+                var allWaterTypes = UnityEngine.Resources.FindObjectsOfTypeAll(wtType);
+                if (allWaterTypes == null) return;
+
+                UnityEngine.Object? pond = null;
+                UnityEngine.Object? lakeSmall = null;
+                foreach (var wt in allWaterTypes)
+                {
+                    if (wt == null) continue;
+                    var name = wt.name ?? "";
+                    if (pond == null && name.IndexOf("Pond", StringComparison.OrdinalIgnoreCase) >= 0)
+                        pond = wt;
+                    else if (lakeSmall == null && name.IndexOf("LakeSmall", StringComparison.OrdinalIgnoreCase) >= 0)
+                        lakeSmall = wt;
+                }
+
+                if (pond == null || lakeSmall == null)
+                {
+                    RiversRestoredMod.Log.Warning(
+                        $"[RR][PondVsLake] Could not find both WaterTypes (pond={pond?.name ?? "null"} " +
+                        $"lakeSmall={lakeSmall?.name ?? "null"}).");
+                    _pondVsLakeDumped = true;
+                    return;
+                }
+
+                RiversRestoredMod.Log.Msg(
+                    $"[RR][PondVsLake] ===== Side-by-side: {pond.name} vs {lakeSmall.name} =====");
+
+                int sameCount = 0, diffCount = 0;
+                foreach (var f in wtType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    object? pVal, lVal;
+                    try { pVal = f.GetValue(pond); }
+                    catch (Exception ex) { pVal = $"<read failed: {ex.Message}>"; }
+                    try { lVal = f.GetValue(lakeSmall); }
+                    catch (Exception ex) { lVal = $"<read failed: {ex.Message}>"; }
+
+                    string pStr = FormatFieldValue(pVal);
+                    string lStr = FormatFieldValue(lVal);
+
+                    bool same = (pVal == null && lVal == null) ||
+                                (pVal != null && lVal != null && pVal.Equals(lVal));
+                    if (same)
+                    {
+                        sameCount++;
+                        // Don't spam log with all-equal fields; comment out
+                        // the next line if you want to verify equality too.
+                        // RiversRestoredMod.Log.Msg($"[RR][PondVsLake]   = {f.Name} ({f.FieldType.Name}) = {pStr}");
+                    }
+                    else
+                    {
+                        diffCount++;
+                        RiversRestoredMod.Log.Msg(
+                            $"[RR][PondVsLake]   ≠ {f.Name} ({f.FieldType.Name})\n" +
+                            $"[RR][PondVsLake]       Pond  = {pStr}\n" +
+                            $"[RR][PondVsLake]       Lake  = {lStr}");
+                    }
+                }
+
+                RiversRestoredMod.Log.Msg(
+                    $"[RR][PondVsLake] ===== Summary: {diffCount} differing field(s), " +
+                    $"{sameCount} matching =====");
+                _pondVsLakeDumped = true;
+            }
+            catch (Exception ex)
+            {
+                RiversRestoredMod.Log.Error($"[RR][PondVsLake] failed: {ex}");
+                _pondVsLakeDumped = true;
+            }
+        }
+
+        /// <summary>Compact human-readable string for a WaterType field's value.</summary>
+        private static string FormatFieldValue(object? v)
+        {
+            if (v == null) return "<null>";
+            if (v is UnityEngine.Object uo) return $"{uo.GetType().Name}('{uo.name}')";
+            if (v is UnityEngine.Color c) return $"RGBA({c.r:F2},{c.g:F2},{c.b:F2},{c.a:F2})";
+            if (v is UnityEngine.AnimationCurve ac) return $"AnimationCurve(keys={ac.length})";
+            if (v is System.Collections.ICollection coll) return $"{v.GetType().Name}(count={coll.Count})";
+            if (v is bool || v is int || v is float || v is string) return v.ToString();
+            // Fallback — best effort. Skip type prefix for primitives, include for complex.
+            return v.GetType().IsPrimitive ? v.ToString() : $"{v.GetType().Name}({v})";
+        }
+
+        /// <summary>Steal LakeSmall's visual materials and assign them to
+        /// the Pond WaterType. Pond classification (small/marshy water
+        /// areas) still happens normally, but rendering uses the blue lake
+        /// material so the user never sees green pond water. Idempotent —
+        /// runs once per process. Side-effects every Pond water body in the
+        /// game session, not just RR-tracked rivers.</summary>
+        private static void SwapPondToLakeMaterial()
+        {
+            if (_pondMaterialSwapped) return;
+            try
+            {
+                Type wtType = AccessTools.TypeByName("TerrainGen.WaterType");
+                if (wtType == null)
+                {
+                    RiversRestoredMod.Log.Warning("[RR][PondSwap] WaterType type not found.");
+                    return;
+                }
+
+                var allWaterTypes = UnityEngine.Resources.FindObjectsOfTypeAll(wtType);
+                if (allWaterTypes == null || allWaterTypes.Length == 0)
+                {
+                    RiversRestoredMod.Log.Warning("[RR][PondSwap] No WaterType assets found.");
+                    return;
+                }
+
+                // Find Pond and a Lake source by name. Prefer LakeSmall as
+                // the donor (closest size class to ponds). Fall back to any
+                // WaterType with "Lake" in the name if LakeSmall is missing.
+                UnityEngine.Object? pond = null;
+                UnityEngine.Object? lakeSource = null;
+                foreach (var wt in allWaterTypes)
+                {
+                    if (wt == null) continue;
+                    var name = wt.name ?? "";
+                    if (name.IndexOf("Pond", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        if (pond == null) pond = wt;
+                    }
+                    else if (name.IndexOf("LakeSmall", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        lakeSource = wt;  // preferred — exact match
+                    }
+                    else if (lakeSource == null && name.IndexOf("Lake", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        lakeSource = wt;  // fallback if LakeSmall missing
+                    }
+                }
+
+                if (pond == null)
+                {
+                    RiversRestoredMod.Log.Warning("[RR][PondSwap] Pond WaterType not found — nothing to swap.");
+                    _pondMaterialSwapped = true;  // don't retry every gen
+                    return;
+                }
+                if (lakeSource == null)
+                {
+                    RiversRestoredMod.Log.Warning("[RR][PondSwap] No Lake-style WaterType found as donor.");
+                    _pondMaterialSwapped = true;
+                    return;
+                }
+
+                // Walk every field on WaterType. Any field whose name contains
+                // "material" gets copied from the Lake donor onto the Pond.
+                // Catches waterMaterial, foamMaterial, and any future-added
+                // material slots without needing a hardcoded field list.
+                int swappedCount = 0;
+                foreach (var f in wtType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    if (f.Name.IndexOf("material", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    try
+                    {
+                        var donorVal = f.GetValue(lakeSource);
+                        var oldVal = f.GetValue(pond);
+                        f.SetValue(pond, donorVal);
+                        var oldName = (oldVal as UnityEngine.Object)?.name ?? "<null>";
+                        var newName = (donorVal as UnityEngine.Object)?.name ?? "<null>";
+                        RiversRestoredMod.Log.Msg(
+                            $"[RR][PondSwap]   Pond.{f.Name}: {oldName} → {newName}");
+                        swappedCount++;
+                    }
+                    catch (Exception fx)
+                    {
+                        RiversRestoredMod.Log.Warning(
+                            $"[RR][PondSwap]   Failed to swap {f.Name}: {fx.Message}");
+                    }
+                }
+
+                _pondMaterialSwapped = true;
+                RiversRestoredMod.Log.Msg(
+                    $"[RR][PondSwap] Done. {swappedCount} material field(s) on '{pond.name}' " +
+                    $"replaced with values from '{lakeSource.name}'.");
+            }
+            catch (Exception ex)
+            {
+                RiversRestoredMod.Log.Error($"[RR][PondSwap] failed: {ex}");
             }
         }
 
