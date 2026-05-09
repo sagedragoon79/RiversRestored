@@ -336,12 +336,23 @@ namespace RiversRestored.Patches
             rt.offsetMax = new Vector2(-sizePadding, 0f);
             var tmp = go.AddComponent<TextMeshProUGUI>();
             if (font != null) tmp.font = font;
-            tmp.alignment = align;
+            // Combine horizontal alignment with TOP vertical so the first
+            // line sits at the top of the strip and the second line follows
+            // — without this the default Middle alignment can clip the
+            // second line when the strip is just-barely-tall-enough.
+            TextAlignmentOptions vAlign = align switch
+            {
+                TextAlignmentOptions.Left => TextAlignmentOptions.TopLeft,
+                TextAlignmentOptions.Right => TextAlignmentOptions.TopRight,
+                TextAlignmentOptions.Center => TextAlignmentOptions.Top,
+                _ => align,
+            };
+            tmp.alignment = vAlign;
             tmp.fontSize = 12;
             tmp.color = new Color(0.9f, 0.9f, 0.85f, 1f);
             tmp.text = "";
             tmp.enableWordWrapping = false;
-            tmp.overflowMode = TextOverflowModes.Truncate;
+            tmp.overflowMode = TextOverflowModes.Overflow;  // let 2-line text spill; we sized strip for it
             tmp.lineSpacing = -2;
             tmp.raycastTarget = false;
             return tmp;

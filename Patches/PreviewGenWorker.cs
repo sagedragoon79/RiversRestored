@@ -639,13 +639,15 @@ namespace RiversRestored.Patches
         }
 
         /// <summary>FF's Difficulty enum (Easy/Normal/Hard/VeryHard) maps to
-        /// the UI labels (Pioneer/Trailblazer/Vanquisher/VeryHard).</summary>
+        /// the UI labels (Pioneer/Trailblazer/Vanquisher/VeryHard) — but for
+        /// the caption we use single-letter abbreviations to fit narrow
+        /// columns.</summary>
         private static string DifficultyToUiLabel(string difficultyName) => difficultyName switch
         {
-            "Easy"     => "Pioneer",
-            "Normal"   => "Trailblazer",
-            "Hard"     => "Vanquisher",
-            "VeryHard" => "VeryHard",
+            "Easy"     => "P",   // Pioneer
+            "Normal"   => "T",   // Trailblazer
+            "Hard"     => "V",   // Vanquisher
+            "VeryHard" => "X",   // (UI-hidden tier)
             _ => difficultyName,
         };
 
