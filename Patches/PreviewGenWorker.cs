@@ -547,10 +547,15 @@ namespace RiversRestored.Patches
                 int waterPct = MapPreviewRenderer.LastWaterPct;
 
                 // Read 4 difficulty values from SettingsManager (static).
-                string res = ReadDifficulty("startingResourcesDifficultyValue");
-                string mal = ReadDifficulty("diseaseDifficultyValue");
-                string wld = ReadDifficulty("animalDifficultyValue");
-                string raid = ReadDifficulty("raiderDifficultyValue");
+                // Wildlife (animal) and Raiders use FF UI buttons that
+                // store enum values one tier higher than the UI label
+                // suggests (Pioneer button = Difficulty.Normal, not Easy).
+                // Empirically verified by user — offset = -1 maps the
+                // stored values back to the UI labels.
+                string res = ReadDifficulty("startingResourcesDifficultyValue", offset: 0);
+                string mal = ReadDifficulty("diseaseDifficultyValue",         offset: 0);
+                string wld = ReadDifficulty("animalDifficultyValue",          offset: -1);
+                string raid = ReadDifficulty("raiderDifficultyValue",         offset: -1);
 
                 // 3 columns × 2 rows:
                 //   Left:    "Seed X · Biome · Size"     | "N river(s) · N% water"
@@ -572,15 +577,16 @@ namespace RiversRestored.Patches
         }
 
         /// <summary>Read a Difficulty-typed static field/property from
-        /// SettingsManager and convert to its UI label (Pioneer/
-        /// Trailblazer/Vanquisher/VeryHard).</summary>
-        private static string ReadDifficulty(string fieldName)
+        /// SettingsManager and convert to its UI label (P/T/V/X). Some
+        /// categories (Wildlife/Raiders) store the enum value one tier
+        /// higher than the UI button label — pass offset=-1 for those
+        /// to subtract one tier before mapping.</summary>
+        private static string ReadDifficulty(string fieldName, int offset = 0)
         {
             try
             {
                 var smType = AccessTools.TypeByName("SettingsManager");
                 if (smType == null) return "?";
-                // Try property first (FF exposes via property; backing field has _ prefix)
                 var prop = smType.GetProperty(fieldName,
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
                 object? val = prop?.GetValue(null);
@@ -593,6 +599,16 @@ namespace RiversRestored.Patches
                     val = fld?.GetValue(null);
                 }
                 if (val == null) return "?";
+
+                // Apply offset by converting to int, adjusting, clamping
+                // to enum range, then converting back to enum value name.
+                if (offset != 0 && val is Enum e)
+                {
+                    int raw = Convert.ToInt32(e);
+                    int adjusted = Math.Max(0, Math.Min(3, raw + offset));  // Difficulty: 0..3
+                    val = Enum.ToObject(val.GetType(), adjusted);
+                }
+
                 return DifficultyToUiLabel(val.ToString());
             }
             catch { return "?"; }
