@@ -171,6 +171,14 @@ namespace RiversRestored.Patches
                 DumpGeneratorState(tg);
 
                 MapPreviewRenderer.TryRender(tg, "PreviewButton");
+
+                // Override caption with rich metadata: actual seed string,
+                // map size, biome, all 4 difficulty selections, river count,
+                // water%. The default caption built by MapPreviewRenderer
+                // is missing seed string + difficulty info that we can
+                // now read.
+                BuildRichCaption(rawSeed, mapSizeIdx, tg);
+
                 Log("Preview gen complete.");
 
                 // Optional: unload Map scene to free resources. Skipped for
@@ -506,6 +514,133 @@ namespace RiversRestored.Patches
                 return false;
             }
         }
+
+        /// <summary>Override PreviewOverlay's caption with a comprehensive
+        /// metadata string: seed, biome, map size, 4 difficulty selections,
+        /// river count, water %. Reads the difficulty values from
+        /// SettingsManager's static fields:
+        ///   startingResourcesDifficultyValue (Resources)
+        ///   diseaseDifficultyValue           (Maladies)
+        ///   animalDifficultyValue            (Wildlife)
+        ///   raiderDifficultyValue            (Raiders)
+        /// FF's Difficulty enum maps Easy/Normal/Hard → Pioneer/Trailblazer/Vanquisher
+        /// in the UI.</summary>
+        private static void BuildRichCaption(string rawSeed, int mapSizeIdx, TerrainGenerator tg)
+        {
+            try
+            {
+                string biome = (RiversRestoredMod.RiverPreset?.Value ?? RiverPresetMode.IdyllicValley).ToString();
+                string size = mapSizeIdx switch
+                {
+                    0 => "Small",
+                    1 => "Medium",
+                    2 => "Large",
+                    _ => $"Size{mapSizeIdx}",
+                };
+
+                // River + water % — reuse what MapPreviewRenderer's caption
+                // would compute. Recompute here from gen state.
+                int riverCount = 0;
+                int waterPct = 0;
+                try
+                {
+                    var gd = AccessTools.Field(typeof(TerrainGenerator), "_generationData")?.GetValue(tg);
+                    if (gd != null)
+                    {
+                        var rField = gd.GetType().GetField("rivers",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        var rivers = rField?.GetValue(gd) as System.Collections.IList;
+                        riverCount = rivers?.Count ?? 0;
+
+                        var waField = gd.GetType().GetField("waterAreas",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        var waterAreas = waField?.GetValue(gd) as System.Collections.IList;
+                        var hnField = gd.GetType().GetField("heightNoise",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (hnField?.GetValue(gd) is float[,] hn && waterAreas != null)
+                        {
+                            // Approximate: count cells inside water area bboxes
+                            // / total cells. Same metric MapPreviewRenderer uses.
+                            int totalCells = hn.GetLength(0) * hn.GetLength(1);
+                            int waterCells = 0;
+                            var waType = AccessTools.TypeByName("TerrainGen.TerrainGenerator+WaterArea");
+                            var fMinX = waType?.GetField("minX");
+                            var fMinZ = waType?.GetField("minZ");
+                            var fMaxX = waType?.GetField("maxX");
+                            var fMaxZ = waType?.GetField("maxZ");
+                            if (fMinX != null && fMinZ != null && fMaxX != null && fMaxZ != null)
+                            {
+                                foreach (var w in waterAreas)
+                                {
+                                    if (w == null) continue;
+                                    int minX = (int)fMinX.GetValue(w);
+                                    int minZ = (int)fMinZ.GetValue(w);
+                                    int maxX = (int)fMaxX.GetValue(w);
+                                    int maxZ = (int)fMaxZ.GetValue(w);
+                                    waterCells += Math.Max(0, (maxX - minX + 1)) * Math.Max(0, (maxZ - minZ + 1));
+                                }
+                            }
+                            waterPct = totalCells > 0 ? (int)Math.Round(100.0 * waterCells / totalCells) : 0;
+                        }
+                    }
+                }
+                catch { }
+
+                // Read 4 difficulty values from SettingsManager (static).
+                string res = ReadDifficulty("startingResourcesDifficultyValue");
+                string mal = ReadDifficulty("diseaseDifficultyValue");
+                string wld = ReadDifficulty("animalDifficultyValue");
+                string raid = ReadDifficulty("raiderDifficultyValue");
+
+                string caption =
+                    $"Seed {rawSeed} · {biome} · {size}\n" +
+                    $"R:{res} · M:{mal} · W:{wld} · Rd:{raid} · {riverCount} river(s) · {waterPct}% water";
+
+                PreviewOverlay.LatestCaption = caption;
+            }
+            catch (Exception ex)
+            {
+                Log($"BuildRichCaption failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>Read a Difficulty-typed static field/property from
+        /// SettingsManager and convert to its UI label (Pioneer/
+        /// Trailblazer/Vanquisher/VeryHard).</summary>
+        private static string ReadDifficulty(string fieldName)
+        {
+            try
+            {
+                var smType = AccessTools.TypeByName("SettingsManager");
+                if (smType == null) return "?";
+                // Try property first (FF exposes via property; backing field has _ prefix)
+                var prop = smType.GetProperty(fieldName,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                object? val = prop?.GetValue(null);
+                if (val == null)
+                {
+                    var fld = smType.GetField(fieldName,
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                              ?? smType.GetField("_" + fieldName,
+                                  BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    val = fld?.GetValue(null);
+                }
+                if (val == null) return "?";
+                return DifficultyToUiLabel(val.ToString());
+            }
+            catch { return "?"; }
+        }
+
+        /// <summary>FF's Difficulty enum (Easy/Normal/Hard/VeryHard) maps to
+        /// the UI labels (Pioneer/Trailblazer/Vanquisher/VeryHard).</summary>
+        private static string DifficultyToUiLabel(string difficultyName) => difficultyName switch
+        {
+            "Easy"     => "Pioneer",
+            "Normal"   => "Trailblazer",
+            "Hard"     => "Vanquisher",
+            "VeryHard" => "VeryHard",
+            _ => difficultyName,
+        };
 
         /// <summary>Call TG.ResetGeneratedData() to clear any prior gen state.</summary>
         private static void TryResetGeneratedData(TerrainGenerator tg)

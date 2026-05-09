@@ -34,7 +34,7 @@ namespace RiversRestored.Patches
         // (1920×1080). CanvasScaler will scale on different displays.
         private const int PANEL_W = 425;
         private const int PANEL_H = 425;
-        private const int CAPTION_H = 30;
+        private const int CAPTION_H = 48;  // 2 lines @ ~22px each
         private const int RIGHT_MARGIN = 8;
 
         // Sprite/font asset names from KC's UI dump (FF's loaded assets).
@@ -256,11 +256,12 @@ namespace RiversRestored.Patches
             _captionText = captionGO.AddComponent<TextMeshProUGUI>();
             if (font != null) _captionText.font = font;
             _captionText.alignment = TextAlignmentOptions.Center;
-            _captionText.fontSize = 14;
+            _captionText.fontSize = 13;
             _captionText.color = new Color(0.9f, 0.9f, 0.85f, 1f);
             _captionText.text = "Rivers Restored — preview";
             _captionText.enableWordWrapping = false;
-            _captionText.overflowMode = TextOverflowModes.Ellipsis;
+            _captionText.overflowMode = TextOverflowModes.Truncate;
+            _captionText.lineSpacing = -2;  // tighter spacing for 2-line
 
             // ── Generate-Preview button (top-right of panel) ──────────────
             // Triggers an on-demand preview gen so the panel populates
