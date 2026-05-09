@@ -538,61 +538,13 @@ namespace RiversRestored.Patches
                     _ => $"Size{mapSizeIdx}",
                 };
 
-                // River + water % — reuse what MapPreviewRenderer's caption
-                // would compute. Recompute here from gen state.
-                int riverCount = 0;
-                int waterPct = 0;
-                try
-                {
-                    var gd = AccessTools.Field(typeof(TerrainGenerator), "_generationData")?.GetValue(tg);
-                    if (gd != null)
-                    {
-                        var rField = gd.GetType().GetField("rivers",
-                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        var rivers = rField?.GetValue(gd) as System.Collections.IList;
-                        riverCount = rivers?.Count ?? 0;
-
-                        var waField = gd.GetType().GetField("waterAreas",
-                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        var waterAreas = waField?.GetValue(gd) as System.Collections.IList;
-                        var hnField = gd.GetType().GetField("heightNoise",
-                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (hnField?.GetValue(gd) is float[,] hn && waterAreas != null)
-                        {
-                            // Approximate: count cells inside water area bboxes
-                            // / total cells. Same metric MapPreviewRenderer uses.
-                            int totalCells = hn.GetLength(0) * hn.GetLength(1);
-                            int waterCells = 0;
-                            var waType = AccessTools.TypeByName("TerrainGen.TerrainGenerator+WaterArea");
-                            var fMinX = waType?.GetField("minX");
-                            var fMinZ = waType?.GetField("minZ");
-                            var fMaxX = waType?.GetField("maxX");
-                            var fMaxZ = waType?.GetField("maxZ");
-                            if (fMinX != null && fMinZ != null && fMaxX != null && fMaxZ != null)
-                            {
-                                foreach (var w in waterAreas)
-                                {
-                                    if (w == null) continue;
-                                    int minX = (int)fMinX.GetValue(w);
-                                    int minZ = (int)fMinZ.GetValue(w);
-                                    int maxX = (int)fMaxX.GetValue(w);
-                                    int maxZ = (int)fMaxZ.GetValue(w);
-                                    waterCells += Math.Max(0, (maxX - minX + 1)) * Math.Max(0, (maxZ - minZ + 1));
-                                }
-                            }
-                            // Clamp to 100 — bbox-area double-counts when
-                            // multiple WaterAreas overlap (e.g., a river
-                            // terminating in a lake), can otherwise produce
-                            // values > 100. Real fix would walk masks for
-                            // unique cells but the clamp is cheap and visually
-                            // correct.
-                            waterPct = totalCells > 0
-                                ? Math.Min(100, (int)Math.Round(100.0 * waterCells / totalCells))
-                                : 0;
-                        }
-                    }
-                }
-                catch { }
+                // River + water % — read from MapPreviewRenderer which
+                // already computed these accurately from the polygon-raster
+                // pixel count. Avoids the bbox-overlap double-counting bug
+                // we had earlier (rivers crossing the map produce huge
+                // bboxes that inflate water%).
+                int riverCount = MapPreviewRenderer.LastRiverCount;
+                int waterPct = MapPreviewRenderer.LastWaterPct;
 
                 // Read 4 difficulty values from SettingsManager (static).
                 string res = ReadDifficulty("startingResourcesDifficultyValue");

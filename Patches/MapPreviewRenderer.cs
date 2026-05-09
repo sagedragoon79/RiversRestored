@@ -26,6 +26,14 @@ namespace RiversRestored.Patches
         // _stage38AlreadyRanThisGen / _stage60AlreadyRanThisGen.
         public static bool RenderedThisGen = false;
 
+        // Counts from the most recent successful render. Exposed so the
+        // caption builder (PreviewGenWorker.BuildRichCaption) can show
+        // the SAME numbers we used for the rendered preview, instead of
+        // computing its own (which double-counts overlapping water area
+        // bboxes and over-reports water%).
+        public static int LastRiverCount = 0;
+        public static int LastWaterPct = 0;
+
         // Output dimensions. 512×512 is a good balance: readable but not
         // excessive on disk. Heightnoise is typically 384×384 (Medium) or
         // 512×512 (Large), so we sample/upscale to 512×512.
@@ -342,6 +350,9 @@ namespace RiversRestored.Patches
                 int waterPct = totalCells > 0
                     ? (int)Math.Round(100.0 * waterPainted / (OUT_W * OUT_H))
                     : 0;
+                // Stash for caption builders to read.
+                LastRiverCount = riverCount;
+                LastWaterPct = waterPct;
                 string baseName = string.IsNullOrEmpty(seedStr)
                     ? $"map_{presetStr}_r{riverCount}_w{waterPct}pct_{ts}"
                     : $"{seedStr}_{presetStr}_r{riverCount}_w{waterPct}pct_{ts}";
