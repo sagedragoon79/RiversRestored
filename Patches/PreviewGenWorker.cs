@@ -547,15 +547,19 @@ namespace RiversRestored.Patches
                 int waterPct = MapPreviewRenderer.LastWaterPct;
 
                 // Read 4 difficulty values from SettingsManager (static).
-                // Wildlife (animal) and Raiders use FF UI buttons that
-                // store enum values one tier higher than the UI label
-                // suggests (Pioneer button = Difficulty.Normal, not Easy).
-                // Empirically verified by user — offset = -1 maps the
-                // stored values back to the UI labels.
-                string res = ReadDifficulty("startingResourcesDifficultyValue", offset: 0);
-                string mal = ReadDifficulty("diseaseDifficultyValue",         offset: 0);
-                string wld = ReadDifficulty("animalDifficultyValue",          offset: -1);
-                string raid = ReadDifficulty("raiderDifficultyValue",         offset: -1);
+                // Diagnostic dump so we can see the RAW enum values and
+                // map them correctly per category. Some categories may
+                // have non-obvious mappings between UI button labels and
+                // stored enum values.
+                string res = ReadDifficulty("startingResourcesDifficultyValue");
+                string mal = ReadDifficulty("diseaseDifficultyValue");
+                string wld = ReadDifficulty("animalDifficultyValue");
+                string raid = ReadDifficulty("raiderDifficultyValue");
+                Log($"  Difficulty raw values: " +
+                    $"resources={ReadDifficultyRaw("startingResourcesDifficultyValue")} " +
+                    $"disease={ReadDifficultyRaw("diseaseDifficultyValue")} " +
+                    $"animal={ReadDifficultyRaw("animalDifficultyValue")} " +
+                    $"raider={ReadDifficultyRaw("raiderDifficultyValue")}");
 
                 // 3 columns × 2 rows:
                 //   Left:    "Seed X · Biome · Size"     | "N river(s) · N% water"
@@ -612,6 +616,33 @@ namespace RiversRestored.Patches
                 return DifficultyToUiLabel(val.ToString());
             }
             catch { return "?"; }
+        }
+
+        /// <summary>Read the raw enum value name + numeric for a difficulty
+        /// field. Diagnostic only — used to verify what FF actually stores
+        /// when the user clicks UI difficulty buttons.</summary>
+        private static string ReadDifficultyRaw(string fieldName)
+        {
+            try
+            {
+                var smType = AccessTools.TypeByName("SettingsManager");
+                if (smType == null) return "?";
+                var prop = smType.GetProperty(fieldName,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                object? val = prop?.GetValue(null);
+                if (val == null)
+                {
+                    var fld = smType.GetField(fieldName,
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+                              ?? smType.GetField("_" + fieldName,
+                                  BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    val = fld?.GetValue(null);
+                }
+                if (val == null) return "null";
+                if (val is Enum e) return $"{val}({Convert.ToInt32(e)})";
+                return val.ToString();
+            }
+            catch (Exception ex) { return $"err:{ex.Message}"; }
         }
 
         /// <summary>FF's Difficulty enum (Easy/Normal/Hard/VeryHard) maps to
