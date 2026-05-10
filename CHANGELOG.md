@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.4.1 — 2026-05-09 (hotfix)
+
+### Fixed
+
+- **Independent lakes deleted from save reload** ([Patches/RiverWaterAreaBuilder.cs](Patches/RiverWaterAreaBuilder.cs)). The post-load absorb pass in `AddPrebuiltWaterAreas` was removing any waterArea whose center cell landed inside a river polygon's mask. When a river snaked near or around an unrelated lake, the lake's center could fall inside the river's bbox without the lake being a merge duplicate — and got deleted from the live `_generationData.waterAreas` list. `FishingManager` then never saw the lake, no `FishArea` spawned, no fishing nodes, the lake was un-fishable.
+- Tightened the absorb criterion: a candidate lake's full bbox must fit inside the river's bbox, AND every sampled corner + center of the lake must land on a filled cell of the river mask. This still catches the merged-into-river case (lake fully consumed by the river polygon) without consuming adjacent independent lakes.
+- Added per-lake log line `absorbing existing waterArea bounds=[...] wt='...' (fully contained in river polygon)` so future cases of unwanted absorption are diagnosable from the log.
+
+### Recovery for v1.4.0 saves affected by the bug
+
+If you saved a game after loading it with v1.4.0 and a lake lost its fish nodes, the disk save now also lacks that lake. Recovery options:
+- Revert to a backup save from before the v1.4.0 load if you have one
+- Manually carve out fish-spawn alternatives via Pangu's lake creation (radius-zero ponds in the lake area)
+- Accept the loss; future loads on v1.4.1+ will not repeat the bug
+
 ## v1.4.0 — 2026-05-09
 
 Major feature release: Pangu-style preview integration, per-preset slider tuning, KC settings registration, and a long tail of stability fixes.

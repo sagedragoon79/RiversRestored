@@ -554,11 +554,24 @@ namespace RiversRestored.Patches
                     var shoresArr = Array.CreateInstance(_pairIntIntType!, shores.Count);
                     for (int i = 0; i < shores.Count; i++) shoresArr.SetValue(shores[i], i);
 
-                    // Absorb FF-regenerated polygons whose center cell falls
-                    // inside our saved mask. These are the lakes our river
-                    // merged with at gen time; FF respawns them from seed on
-                    // load so without absorption they'd visually overlap our
-                    // merged shape and z-fight at the surface.
+                    // Absorb FF-regenerated polygons that were merged INTO
+                    // this river at gen time. These need to be removed on
+                    // load so they don't visually overlap our merged
+                    // shape and z-fight at the surface.
+                    //
+                    // Containment criterion: the existing lake's full
+                    // bounding box must fit inside the river polygon's
+                    // bbox AND every sampled corner of the lake's bbox
+                    // must land on a filled cell of the river mask.
+                    //
+                    // Earlier criterion was just "lake's center cell
+                    // inside river mask" — too loose. A river that
+                    // snakes near or around an independent lake can
+                    // contain that lake's center in its bbox without
+                    // the lake being a merge duplicate. Result was real
+                    // lakes getting deleted on load, FishingManager
+                    // never seeing them, no fish nodes — observable as
+                    // un-fishable lakes.
                     for (int idx = waterAreas.Count - 1; idx >= 0; idx--)
                     {
                         var existing = waterAreas[idx];
@@ -567,20 +580,47 @@ namespace RiversRestored.Patches
                         int eMinZ = (int)_faMinZ!.GetValue(existing);
                         int eMaxX = (int)_faMaxX!.GetValue(existing);
                         int eMaxZ = (int)_faMaxZ!.GetValue(existing);
-                        int eCenterX = (eMinX + eMaxX) / 2;
-                        int eCenterZ = (eMinZ + eMaxZ) / 2;
-                        if (eCenterX < poly.MinX || eCenterX > poly.MaxX) continue;
-                        if (eCenterZ < poly.MinZ || eCenterZ > poly.MaxZ) continue;
-                        int mx = eCenterX - poly.MinX;
-                        int mz = eCenterZ - poly.MinZ;
-                        if (mx < 0 || mx >= pw || mz < 0 || mz >= ph) continue;
-                        if (!mask[mx, mz]) continue;
-                        // Don't absorb the ocean — its bbox is huge and its
-                        // center could legitimately land inside our mask
-                        // without it being a polygon we merged.
+
+                        // Don't absorb the ocean — its bbox is huge and
+                        // could legitimately envelop our river's bbox.
                         var existingWt = _faWaterType!.GetValue(existing) as UnityEngine.Object;
                         string existingWtName = existingWt?.name ?? "";
                         if (existingWtName.IndexOf("ocean", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+                        // Tight bbox containment: lake's full bbox must
+                        // fit inside the river's bbox.
+                        if (eMinX < poly.MinX || eMaxX > poly.MaxX) continue;
+                        if (eMinZ < poly.MinZ || eMaxZ > poly.MaxZ) continue;
+
+                        // Mask check: every corner + center of the
+                        // existing bbox must land on a filled cell of
+                        // the river mask. If even one corner is outside
+                        // the merged polygon, this lake extends beyond
+                        // the river — not a merge duplicate.
+                        bool allInsideMask = true;
+                        int[][] samples = new[]
+                        {
+                            new[] { eMinX, eMinZ },
+                            new[] { eMaxX, eMinZ },
+                            new[] { eMinX, eMaxZ },
+                            new[] { eMaxX, eMaxZ },
+                            new[] { (eMinX + eMaxX) / 2, (eMinZ + eMaxZ) / 2 },
+                        };
+                        foreach (var sample in samples)
+                        {
+                            int mx = sample[0] - poly.MinX;
+                            int mz = sample[1] - poly.MinZ;
+                            if (mx < 0 || mx >= pw || mz < 0 || mz >= ph
+                                || !mask[mx, mz])
+                            {
+                                allInsideMask = false;
+                                break;
+                            }
+                        }
+                        if (!allInsideMask) continue;
+
+                        Log($"  absorbing existing waterArea bounds=[{eMinX},{eMinZ}..{eMaxX},{eMaxZ}] " +
+                            $"wt='{existingWtName}' (fully contained in river polygon)");
                         waterAreas.RemoveAt(idx);
                         absorbed++;
                     }
