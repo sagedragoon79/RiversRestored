@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.2 — 2026-05-10 (hotfix)
+
+### Fixed
+
+- **Preview PNG written on every save load.** `MapPreviewRenderer.TryRender` was firing from `RiverSettingsPatch.LateCarvePostfix`, which hooks FF's late-stage terrain carriers — those run on every save load when FF rebuilds terrain. Result: every save load wrote a fresh PNG to `UserData/RiversRestored/Previews/`, and because RR's carver short-circuits on save load (`RestorePending` / `RestoredThisLoad` guards), the captured render was a pre-river-overlay state. Players saw a stream of rivers-less PNGs accumulating per-load. Added an `IsLoadingSavedMap` guard at the call site — render now skips on save loads. New game gen and auto-regen previews unaffected.
+
 ## v1.4.1 — 2026-05-09 (hotfix)
 
 ### Fixed

@@ -193,7 +193,18 @@ namespace RiversRestored.Patches
                 // the final carved channels and waterAreas is fully populated.
                 // No-op when EnableMapPreviewRender is off or already rendered
                 // this gen.
-                MapPreviewRenderer.TryRender(__instance, __originalMethod?.Name ?? "?");
+                //
+                // Skip on save load. FF rebuilds terrain on every save
+                // load, which fires this postfix. Without the guard, every
+                // load wrote a fresh PNG to UserData/RiversRestored/Previews/
+                // — and worse, the carver short-circuits during save load
+                // (RestorePending/RestoredThisLoad), so the render
+                // captured the terrain pre-river-overlay. Result: a stream
+                // of "without rivers" PNGs accumulating per-load.
+                if (!IsLoadingSavedMap(__instance))
+                {
+                    MapPreviewRenderer.TryRender(__instance, __originalMethod?.Name ?? "?");
+                }
             }
             catch (Exception ex)
             {
