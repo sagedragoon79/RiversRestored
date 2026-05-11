@@ -184,15 +184,23 @@ namespace RiversRestored.Patches
         /// </summary>
         private static void LateCarvePostfix(TerrainGenerator __instance, MethodBase __originalMethod)
         {
-            if (!RiversRestoredMod.RiversEnabled.Value) return;
             try
             {
-                LogWaterAreaCount(__instance, __originalMethod?.Name ?? "?");
-                RiverCarver.CarveAllRivers(__instance);
-                // Render preview AFTER the carve so the heightnoise reflects
-                // the final carved channels and waterAreas is fully populated.
-                // No-op when EnableMapPreviewRender is off or already rendered
-                // this gen.
+                // Carve only when rivers are enabled — when disabled, RR
+                // contributes nothing to the gen, but the preview must
+                // still render so the UI doesn't get stuck on
+                // "generating" with no image (gen completes successfully,
+                // there's just no rivers to carve).
+                if (RiversRestoredMod.RiversEnabled?.Value ?? false)
+                {
+                    LogWaterAreaCount(__instance, __originalMethod?.Name ?? "?");
+                    RiverCarver.CarveAllRivers(__instance);
+                }
+
+                // Render preview AFTER the (optional) carve so heightnoise
+                // reflects the final carved channels and waterAreas is fully
+                // populated. No-op when EnableMapPreviewRender is off or
+                // already rendered this gen.
                 //
                 // Skip on save load. FF rebuilds terrain on every save
                 // load, which fires this postfix. Without the guard, every

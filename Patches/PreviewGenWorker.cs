@@ -1176,7 +1176,13 @@ namespace RiversRestored.Patches
                     if (f != null) f.SetValue(debugOpts, v);
                 }
                 Set("generateFeatures", true);
-                Set("generateRivers", true);
+                // Honor the master rivers toggle. If RiversEnabled is false,
+                // RR's river patches no-op (RiverCarver/RiverSettingsPatch
+                // early-return), so requesting generateRivers=true here makes
+                // FF's terrain gen wait for state RR's patches won't produce
+                // — preview hangs indefinitely. Match the toggle so the
+                // generator skips river stages entirely.
+                Set("generateRivers", RiversRestoredMod.RiversEnabled?.Value ?? true);
                 Set("paintTerrain", true);
                 Set("paintBiomes", true);
                 Set("generateRoads", false);

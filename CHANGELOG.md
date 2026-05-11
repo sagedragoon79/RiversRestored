@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.3 — 2026-05-11 (hotfix)
+
+### Fixed
+
+- **Preview hung / never rendered when `RiversEnabled = false`.** Two coupled bugs in the preview pipeline:
+  - `PreviewGenWorker.ConfigureDebugOptions` hard-coded `generateRivers = true` regardless of the master toggle. With rivers disabled, FF's terrain gen would enter river stages while RR's river patches early-returned on `!RiversEnabled` — leaving FF waiting for state RR's patches wouldn't produce. Preview hung indefinitely (past the inner-gen timeout because the stall happened before any timeout-protected stage). Now reads `RiversEnabled.Value` and passes it through, so river stages are skipped cleanly when rivers are off.
+  - `RiverSettingsPatch.LateCarvePostfix` early-returned on `!RiversEnabled` BEFORE calling `MapPreviewRenderer.TryRender`, so the preview overlay never received a texture when rivers were disabled. The overlay stayed stuck on "generating preview" indefinitely even after gen completed gracefully. Restructured to gate only the carve on `RiversEnabled` — `TryRender` now fires whether or not rivers are enabled, so the preview always renders.
+- Net effect: rivers-off previews now generate and display correctly in the same time budget as rivers-on, and the toggle can be flipped freely between previews.
+
 ## v1.4.2 — 2026-05-10 (hotfix)
 
 ### Fixed
