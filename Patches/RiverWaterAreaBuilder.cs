@@ -321,6 +321,40 @@ namespace RiversRestored.Patches
                     if (eMinX > sMaxX + padding || eMaxX < sMinX - padding ||
                         eMinZ > sMaxZ + padding || eMaxZ < sMinZ - padding)
                         continue;
+
+                    // ── Only merge with OUR previously-added river areas. ──
+                    // NEVER absorb a vanilla water body (lake / pond / ocean).
+                    //
+                    // Absorbing a lake produced a merged polygon whose
+                    // edge[] outline is NOT a clean single closed loop (a
+                    // thin river disc joined to — or, with padding=1, nearly
+                    // joined to — a lake blob). FF derives a water body's
+                    // surface area from that edge array:
+                    //   WaterAreaInfo.area = ClosedPolygonArea(SortAdjacentPoints(edge))
+                    // (Assembly-CSharp TerrainManager.GetAllWaterAreas).
+                    // A non-loop / pinched / disconnected edge set yields a
+                    // bogus near-zero area, so FishingManager.GetFishDataForWaterArea
+                    // returns 0 fish / 0 schools / 0 shoreline fish — the
+                    // absorbed lake has no fish nodes at all. (Rivers still
+                    // fish fine: they get a separate FishArea via riverInfos
+                    // with a hard-coded area, so river fishing works while a
+                    // lake the river grazed comes up empty.)
+                    //
+                    // River-stamp ↔ river-stamp merges are still allowed —
+                    // uniform disc geometry unions into a clean loop, and a
+                    // single river must remain one continuous polygon.
+                    //
+                    // Side benefit: this also closes the v1.4.1 "independent
+                    // lake deleted on save reload" bug class at its source —
+                    // the absorb pass was the same swallow-a-lake pattern.
+                    var entryWt = _faWaterType!.GetValue(entry) as UnityEngine.Object;
+                    bool isOurRiverArea =
+                        RiverWaterAreaBounds.Contains(
+                            new WaterAreaBoundsKey(eMinX, eMinZ, eMaxX, eMaxZ))
+                        || (entryWt != null
+                            && (entryWt == riverFallbackType || entryWt == RiverWaterType));
+                    if (!isOurRiverArea) continue;
+
                     // Cell-adjacency precise check: does the polygon have
                     // a true cell within (radius + padding) of stamp center?
                     var ePts = _faPoints!.GetValue(entry) as bool[,];

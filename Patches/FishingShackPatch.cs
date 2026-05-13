@@ -74,6 +74,30 @@ namespace RiversRestored.Patches
                 Type? dockType = AccessTools.TypeByName("FishingDock");
                 if (shackType != null) PatchCreateFishingAreas(harmony, shackType);
                 if (dockType != null) PatchCreateFishingAreas(harmony, dockType);
+
+                // ── 3) DIAGNOSTIC: postfix FishingManager.Initialize ────────
+                //
+                // Log what FishingManager actually built so we can diagnose
+                // the "lakes have no fish" symptom. We want to see:
+                //   - how many water areas FF iterated
+                //   - per-area: id, area, startFish, numFishSchools, type name
+                //   - how many river FishAreas (riverInfos path) it built
+                // If this loop never fires or aborts early, lakes won't get
+                // FishAreas at all → shack sees zero fishing areas.
+                Type? fmType = AccessTools.TypeByName("FishingManager");
+                if (fmType != null)
+                {
+                    var initMI = fmType.GetMethod("Initialize",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    if (initMI != null)
+                    {
+                        var diag = typeof(FishingShackPatch).GetMethod(
+                            nameof(FishingManagerInitializePostfix),
+                            BindingFlags.Static | BindingFlags.NonPublic);
+                        harmony.Patch(initMI, postfix: new HarmonyMethod(diag));
+                        Log("Hooked FishingManager.Initialize (diagnostic dump).");
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -130,6 +154,36 @@ namespace RiversRestored.Patches
             catch (Exception ex)
             {
                 Log($"FishAreaCtorPostfix exception: {ex.Message}");
+            }
+        }
+
+        /// <summary>Observability: log FishArea / riverInfo counts at the
+        /// end of FishingManager.Initialize. Cheap (one log line) and gives
+        /// a fast signal if lake-FishArea creation regresses again — e.g.
+        /// the v1.4.4 cachedAreas-stale-empty bug presented as
+        /// `fishAreas.Count = riverInfos.Count` (zero lake FishAreas built).
+        /// </summary>
+        private static void FishingManagerInitializePostfix(object __instance)
+        {
+            try
+            {
+                Type fmType = __instance.GetType();
+                var faField = fmType.GetField("fishAreas",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var fishAreas = faField?.GetValue(__instance) as System.Collections.IDictionary;
+                int totalFa = fishAreas?.Count ?? -1;
+
+                var riField = fmType.GetField("riverInfos",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var riverInfos = riField?.GetValue(__instance) as System.Collections.IList;
+                int totalRiver = riverInfos?.Count ?? -1;
+
+                int lakeFa = totalFa - totalRiver;
+                Log($"FishingManager.Initialize done. fishAreas.Count={totalFa} (lakes={lakeFa}, rivers={totalRiver})");
+            }
+            catch (Exception ex)
+            {
+                Log($"FishingManagerInitializePostfix exception: {ex.Message}");
             }
         }
 

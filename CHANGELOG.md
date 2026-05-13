@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4.4 — 2026-05-13 (hotfix)
+
+### Fixed
+
+- **Lakes had no fish nodes / no fishing zones** ([Patches/RiverSettingsPatch.cs](Patches/RiverSettingsPatch.cs)). Root cause: RR's "heal" pass before injecting the early Stage 60 (RiverGeometry) on `TerrainGenerator` set `cachedAreas` to a fresh empty `List<WaterAreaInfo>` as a defensive measure against a GridTrace NRE. But FF's `TerrainManager.GetAllWaterAreas()` is lazy-cached and never re-invalidated by FF, so that empty seed stuck for the rest of the session. When `FishingManager.Initialize` later called `GetAllWaterAreas()` it received the empty list — its lake-iteration loop ran zero times, **zero `FishArea`s were created for any lake**. The parallel `riverInfos` loop still ran, so river fishing worked (FF native rivers, hardcoded area), but every lake on every map had zero fish nodes / zero fishing zones (a fishing shack placed on a lake shore showed `Fishing Areas: 0, Fish Count: 0`). Fix: null out `cachedAreas` after our Stage 60 injection finishes — the next caller (`FishingManager.Initialize` or any rendering subsystem) triggers a fresh rebuild against the real, fully-populated `_generationData.waterAreas`. Diagnostic confirmation: `fishAreas.Count` went from `5` (rivers only) → `34` (32 lakes + 2 rivers) on the same seed after the fix.
+- **River merge could absorb adjacent lakes during gen-time** ([Patches/RiverWaterAreaBuilder.cs](Patches/RiverWaterAreaBuilder.cs)). When a river stamp's bbox + cell-adjacency tolerance reached a vanilla lake polygon, `AddWaterAreaWithPanguMerge` fused the lake into the river's `WaterArea` and deleted the standalone lake entry. The merged polygon's `edge[]` array — a thin river disc joined to a lake blob, sometimes with a 1-cell gap from the `padding=1` adjacency tolerance — was no longer a clean single closed loop, so FF's `WaterAreaInfo.area = ClosedPolygonArea(SortAdjacentPoints(edge))` returned a bogus near-zero value, and `FishingManager.GetFishDataForWaterArea` produced 0 fish / 0 schools / 0 shoreline fish for the merged area. Rivers themselves still fished fine (separate `riverInfos` path with hard-coded `area = 100000f`), but a lake the river grazed came up empty. Restricted the merge-set selection so river stamps only fuse with RR's own previously-added river areas (tracked via `RiverWaterAreaBounds` / river WaterType reference). Vanilla lakes/ponds/ocean are never absorbed — they keep their original Stage-50 flood-fill polygons, FF computes the correct area, and fish spawn normally. Side benefit: this also closes the v1.4.1 "independent lake deleted on save reload" bug class at its gen-time source.
+
+### Added
+
+- **`FishingManager.Initialize` observability hook**. Logs one line at end of init: `fishAreas.Count=N (lakes=L, rivers=R)`. Future regressions of either fix above show up immediately in the log as `lakes=0`.
+
 ## v1.4.3 — 2026-05-11 (hotfix)
 
 ### Fixed

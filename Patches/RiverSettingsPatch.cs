@@ -530,6 +530,53 @@ namespace RiversRestored.Patches
                 _stage60AlreadyRanThisGen = true;
             }
 
+            // ── CRITICAL: invalidate cachedAreas after our Stage 60 injection.
+            //
+            // PrepareForStage60 sets _generationData... wait no — it sets
+            // TerrainGenerator.cachedAreas to a fresh EMPTY List<WaterAreaInfo>
+            // as a defensive heal against Stage 60's GridTrace NRE.
+            //
+            // FF's TerrainManager.GetAllWaterAreas() is lazy-cached:
+            //   if (cachedAreas != null) return cachedAreas;
+            //   cachedAreas = new List<WaterAreaInfo>();
+            //   foreach (WaterArea waterArea in generationData.waterAreas) { ... }
+            // (Assembly-CSharp TerrainManager.GetAllWaterAreas, line 487664)
+            //
+            // FF never invalidates cachedAreas. So an empty seed sticks: even
+            // after Stage 50 rebuilds _generationData.waterAreas with all the
+            // real lakes, GetAllWaterAreas returns the empty cached list.
+            //
+            // The downstream casualty is FishingManager.Initialize:
+            //   foreach (var allWaterArea in terrainManager.GetAllWaterAreas())
+            //       { ...create FishArea... }
+            // (Assembly-CSharp FishingManager.Initialize, line 152267)
+            //
+            // With cachedAreas empty, this loop iterates ZERO entries — NO
+            // FishArea is created for any lake/pond. The riverInfos loop right
+            // below it still runs (separate data source), so rivers get fish
+            // via the hardcoded-area river path. Result: rivers fish fine,
+            // every lake on the map has zero nodes / zero fish.
+            //
+            // Diagnostic dump that caught this:
+            //   fishAreas.Count=5 riverInfos.Count=5
+            // — 5 rivers, 0 lake FishAreas, on a map with 30+ vanilla lakes.
+            //
+            // Fix: null out cachedAreas now that Stage 60 (or its skip path)
+            // has finished. The next caller — FishingManager.Initialize, or
+            // any rendering subsystem — triggers a fresh rebuild against the
+            // real _generationData.waterAreas, which by this point contains
+            // both the vanilla lake polygons and our river polygons.
+            try
+            {
+                var caField = __instance.GetType().GetField("cachedAreas",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (caField != null) caField.SetValue(__instance, null);
+            }
+            catch (Exception ex)
+            {
+                RiversRestoredMod.Log.Warning($"[RR] Failed to null cachedAreas post-Stage-60: {ex.Message}");
+            }
+
             // ── Second WaterArea registration pass (post-Stage-50, persistence) ──
             // Stage 50 (Water) rebuilds _generationData.waterAreas from its
             // own data source, stripping our Stage 38 additions. This second
