@@ -53,7 +53,7 @@ namespace RiversRestored
                 /*version*/ null,
                 /*iconResourcePath*/ null,
                 /*accentRgb — river blue*/ new[] { 0.30f, 0.55f, 0.75f, 1f },
-                /*order*/ 50
+                /*order*/ 10
             });
         }
 
