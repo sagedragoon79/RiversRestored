@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.4.5 — 2026-05-14
+## v1.4.6 — 2026-05-14
 
 ### Added — Per-Preset Water Multiplier
 
