@@ -1214,7 +1214,7 @@ namespace RiversRestored
                 {
                     if (Patches.RiverPersistence.RestoredThisLoad) return;
 
-                    if (!_dumpedSaveManager)
+                    if (!_dumpedSaveManager && (VerboseDiagnostics?.Value ?? false))
                     {
                         _dumpedSaveManager = true;
                         Patches.RiverPersistence.DumpSaveManager();
