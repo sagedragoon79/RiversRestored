@@ -51,6 +51,21 @@ namespace RiversRestored.Patches
         public static void TryRender(TerrainGenerator tg, string source)
         {
             if (!(RiversRestoredMod.EnableMapPreviewRender?.Value ?? false)) return;
+            // CRITICAL: only render when the preview pipeline is actively
+            // requesting a gen. LateCarvePostfix (the caller) is hooked on
+            // FF's terrain gen stage carriers (Stage 40/50/60/70/97), which
+            // fire during BOTH preview gen AND actual gameplay terrain gen.
+            // Without this gate, clicking "Start" → FF unloads our preview
+            // Map scene → loads a fresh Map scene for gameplay → runs the
+            // full terrain pipeline → our stage hooks fire → TryRender writes
+            // a spurious PNG (with seed='' because the preview context is
+            // gone) and the preview overlay re-engages with a progress bar
+            // ("preview goes black and starts generating another preview").
+            // IsPreviewActive is set true only by PreviewGenWorker around
+            // its tgc.GenSliced_Generate call; HardCancel clears it after
+            // the Map scene unload completes. False here = gameplay gen
+            // (or any other non-preview path) → no preview render.
+            if (!PreviewGenWorker.IsPreviewActive) return;
             if (RenderedThisGen) return;
             if (tg == null) return;
             try

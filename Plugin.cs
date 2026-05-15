@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.4.4", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.4.5", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -302,6 +302,7 @@ namespace RiversRestored
             public float JitterAmplitude;
             public float JitterFrequency;
             public int FishingAreaMultiplier;
+            public float WaterMultiplier;   // scales SettingsManager.mapWaterValue at gen time; 1.0 = vanilla, <1 = drier, >1 = wetter
         }
 
         // Preset values are tuned starting points — adjust over time as
@@ -333,6 +334,7 @@ namespace RiversRestored
                 TrenchDepth = 3.0f, SmoothPasses = 8,
                 JitterAmplitude = 1.5f, JitterFrequency = 0.6f,
                 FishingAreaMultiplier = 4,
+                WaterMultiplier = 0.75f,        // adding rivers makes IdyllicValley feel oversaturated; default trims back
             },
             // LowlandLakes: flat with ponds. Aggressive count + short paths,
             // but polygon footprint matched to IdyllicValley so the merged
@@ -346,6 +348,7 @@ namespace RiversRestored
                 TrenchDepth = 1.2f, SmoothPasses = 8,
                 JitterAmplitude = 0.8f, JitterFrequency = 0.4f,
                 FishingAreaMultiplier = 5,
+                WaterMultiplier = 0.7f,         // LowlandLakes is wet by name; with rivers added it's swampy. Trim further than IdyllicValley.
             },
             // AridHighlands: high but dry. Fewer rivers, deeper trenches to
             // read as rocky. Polygon footprint matched to IdyllicValley so
@@ -358,6 +361,7 @@ namespace RiversRestored
                 TrenchDepth = 2.5f, SmoothPasses = 5,
                 JitterAmplitude = 1.0f, JitterFrequency = 0.5f,
                 FishingAreaMultiplier = 3,
+                WaterMultiplier = 1.0f,         // AridHighlands is dry; no trim needed
             },
             // Plains: single long river bisecting the map. One dominant
             // waterway, deep and meandering, edge-to-edge. Terrain is open
@@ -387,6 +391,7 @@ namespace RiversRestored
                 TrenchDepth = 4.0f, SmoothPasses = 10, // deep + very smooth banks
                 JitterAmplitude = 2.5f, JitterFrequency = 0.4f, // sweeping bends
                 FishingAreaMultiplier = 8,             // sole river is the food source
+                WaterMultiplier = 1.0f,                // sparse-water biome; river is the centerpiece, leave lakes alone
             },
             // AlpineValleys: mountains/valleys. Long deep alpine drainages
             // with wide gradual banks and strong meander.
@@ -398,6 +403,7 @@ namespace RiversRestored
                 TrenchDepth = 3.0f, SmoothPasses = 4,
                 JitterAmplitude = 2.5f, JitterFrequency = 0.6f,
                 FishingAreaMultiplier = 4,
+                WaterMultiplier = 0.85f,        // alpine drainages are dry-ish; mild trim
             },
         };
 
@@ -426,6 +432,7 @@ namespace RiversRestored
             public MelonPreferences_Entry<float> JitterAmplitude = null!;
             public MelonPreferences_Entry<float> JitterFrequency = null!;
             public MelonPreferences_Entry<int> FishingAreaMultiplier = null!;
+            public MelonPreferences_Entry<float> WaterMultiplier = null!;
 
             public RiverPresetValues ToValues() => new RiverPresetValues
             {
@@ -442,6 +449,7 @@ namespace RiversRestored
                 JitterAmplitude = JitterAmplitude.Value,
                 JitterFrequency = JitterFrequency.Value,
                 FishingAreaMultiplier = FishingAreaMultiplier.Value,
+                WaterMultiplier = WaterMultiplier.Value,
             };
         }
 
@@ -509,6 +517,13 @@ namespace RiversRestored
             "Boosts Fishing Shack productivity when placed next to a river. " +
             "1 = no boost (river fishing feels weak), 4 = good balance, " +
             "8+ = lush fishing economy. Lakes and ocean fishing are unaffected.";
+        private const string DESC_WATER_MULTIPLIER =
+            "Multiplies the seed's water value before terrain generation, so the same seed produces drier or wetter maps. " +
+            "1.0 = vanilla (use the slider value as-is). 0.7 = noticeably drier, smaller and fewer lakes. " +
+            "0.5 = much drier. 1.3 = wetter, larger lakes. Useful when adding rivers makes a biome feel oversaturated. " +
+            "Affects both the new-settlement preview and the actual gameplay map. " +
+            "Per-preset defaults: IdyllicValley=0.75, LowlandLakes=0.7, AlpineValleys=0.85, AridHighlands=1.0, Plains=1.0. " +
+            "Caveat: a given seed will look different on machines with different multipliers — note your value when sharing seeds.";
 
         /// <summary>Create a fresh MelonPreferences category for one preset
         /// and populate it with all 13 tunable entries, defaulting to that
@@ -569,6 +584,9 @@ namespace RiversRestored
                 FishingAreaMultiplier = cat.CreateEntry("FishingAreaMultiplier", defaults.FishingAreaMultiplier,
                     display_name: prefix + "River Fishing Productivity Boost",
                     description: DESC_FISHING_MULTIPLIER),
+                WaterMultiplier = cat.CreateEntry("WaterMultiplier", defaults.WaterMultiplier,
+                    display_name: prefix + $"Water Amount Multiplier (default: {defaults.WaterMultiplier:0.00})",
+                    description: DESC_WATER_MULTIPLIER),
             };
         }
 
@@ -989,12 +1007,13 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
+                Patches.WaterValueOverridePatch.Apply(HarmonyInstance);
                 // Pangu-pattern: prefix on StartSceneManager.StartNewGame
                 // so we tear down the preview worker BEFORE FF begins
                 // its gameplay scene transition. Without this, FF can
                 // adopt the preview's mutated TGC and hang at ~85%.
                 Patches.StartNewGamePatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.4.4 loaded. NumRivers={NumRivers.Value}, " +
+                Log.Msg($"[RR] Rivers Restored 1.4.5 loaded. NumRivers={NumRivers.Value}, " +
                         $"RiversEnabled={RiversEnabled.Value}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.

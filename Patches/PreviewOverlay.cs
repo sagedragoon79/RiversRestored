@@ -220,7 +220,12 @@ namespace RiversRestored.Patches
             // while the panel is open, and trigger a fresh preview after
             // a short debounce. The first show (panel just opened with
             // pref enabled) also triggers an initial gen.
-            HandleAutoRegen(wantVisible);
+            //
+            // Pass both signals separately so HandleAutoRegen can
+            // distinguish "user left the new-game screen entirely"
+            // (reset state) from "panel briefly invisible due to layout
+            // flicker / CanvasGroup ref re-resolution" (don't reset).
+            HandleAutoRegen(wantVisible, onNewGameScreen);
             if (_shadowRT.gameObject.activeSelf != wantVisible)
                 _shadowRT.gameObject.SetActive(wantVisible);
 
@@ -690,16 +695,40 @@ namespace RiversRestored.Patches
         /// the timer expires, fires PreviewGenWorker.TriggerPreviewSoftRestart
         /// which cancel-and-restarts any in-flight gen so the latest
         /// state always wins.</summary>
-        private void HandleAutoRegen(bool wantVisible)
+        private void HandleAutoRegen(bool wantVisible, bool onNewGameScreen)
         {
             try
             {
-                if (!wantVisible)
+                // If we left the Start (new-game) scene, the panel session
+                // is over: reset state so the next time the user comes back
+                // to the new-game screen, the First-show path correctly
+                // kicks an initial gen for that fresh session.
+                if (!onNewGameScreen)
                 {
+                    if (_wasPanelOpenAndEnabled)
+                    {
+                        MelonLogger.Msg("[RR][PreviewOverlay] AutoRegen: left Start scene — resetting panel-session state.");
+                    }
                     _wasPanelOpenAndEnabled = false;
                     _changeDetectedAt = -1f;
                     return;
                 }
+
+                // We're on the Start scene but the panel/pref isn't currently
+                // showing the overlay (CanvasGroup.alpha dipped from a layout
+                // reflow when our preview image lands, or
+                // IsAdvancedSettingsPanelOpen's cached CanvasGroup ref is
+                // being re-resolved — up to PANEL_LOOKUP_INTERVAL_FRAMES of
+                // false readings during re-resolution). Just suspend trigger
+                // evaluation; do NOT tear down state. Resetting on those
+                // false readings was the cause of the "three previews per
+                // change" bug: brief invisibility → state reset → next frame
+                // re-enters First-show → silent debounce → soft-restart fires
+                // while gen 1 was still doing post-render bookkeeping → gen 2
+                // runs on a dirty TerrainGenerator (state leakage produces
+                // different output for the same seed) → HardCancel → gen 3
+                // on a fresh scene matches gen 1.
+                if (!wantVisible) return;
 
                 // Read current settings:
                 //   mapSizeValue — static, cheap read.
@@ -729,8 +758,30 @@ namespace RiversRestored.Patches
                 // Also flip CaptionReady=false here so the panel shows
                 // the progress bar immediately instead of flashing the
                 // previous gen's image during the 300ms debounce window.
+                //
+                // BUT: defer first-show until the seed input field has
+                // actually populated. The panel becomes visible a few frames
+                // before FF finishes writing the initial seed string into
+                // the input. If first-show fires with seed='', it kicks gen
+                // #1 against an empty seed; the input then populates and
+                // change-detect fires gen #2 against the real seed. Two
+                // gens per panel-open. The user sees gen #2's preview, but
+                // gameplay matches gen #1's RNG state — preview-vs-gameplay
+                // divergence on the same seed, even though both gens
+                // *technically* ran with the same final seed value. By
+                // waiting for the seed to exist before first-show, we
+                // collapse to a single trigger and the seed gen state at
+                // Stage 38 matches what gameplay will reproduce.
                 if (!_wasPanelOpenAndEnabled)
                 {
+                    if (string.IsNullOrEmpty(curSeedText))
+                    {
+                        // Seed not ready yet — wait. _wasPanelOpenAndEnabled
+                        // stays false so we re-enter this branch next frame.
+                        return;
+                    }
+                    MelonLogger.Msg(
+                        $"[RR][PreviewOverlay] AutoRegen first-show: size='{curSize}' seed='{curSeedText}' — debounce scheduled.");
                     _wasPanelOpenAndEnabled = true;
                     _lastMapSize = curSize;
                     _lastSeedText = curSeedText;
@@ -740,10 +791,14 @@ namespace RiversRestored.Patches
                 }
 
                 // Subsequent changes — reset debounce on each delta.
-                bool changed = !object.Equals(curSize, _lastMapSize)
-                               || curSeedText != _lastSeedText;
-                if (changed)
+                bool sizeChanged = !object.Equals(curSize, _lastMapSize);
+                bool seedChanged = curSeedText != _lastSeedText;
+                if (sizeChanged || seedChanged)
                 {
+                    MelonLogger.Msg(
+                        $"[RR][PreviewOverlay] AutoRegen change detected: " +
+                        $"size {(sizeChanged ? $"'{_lastMapSize}' → '{curSize}'" : "(same)")}, " +
+                        $"seed {(seedChanged ? $"'{_lastSeedText}' → '{curSeedText}'" : "(same)")}");
                     _lastMapSize = curSize;
                     _lastSeedText = curSeedText;
                     _changeDetectedAt = Time.realtimeSinceStartup;
@@ -753,6 +808,8 @@ namespace RiversRestored.Patches
                 if (_changeDetectedAt > 0f
                     && (Time.realtimeSinceStartup - _changeDetectedAt) >= DEBOUNCE_SECONDS)
                 {
+                    MelonLogger.Msg(
+                        $"[RR][PreviewOverlay] AutoRegen debounce fired — calling TriggerPreviewSoftRestart.");
                     _changeDetectedAt = -1f;
                     PreviewGenWorker.TriggerPreviewSoftRestart();
                 }

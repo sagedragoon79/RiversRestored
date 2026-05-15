@@ -315,6 +315,10 @@ namespace RiversRestored
                 NewMeta("River Meander Frequency", min: 0f, max: 3f,
                     tooltip: "Wave oscillations per Voronoi segment",
                     order: 110, visibleWhen: visible));
+            Reg(category, entries.WaterMultiplier,
+                NewMeta("Water Amount Multiplier", min: 0.3f, max: 1.5f,
+                    tooltip: "Scales the seed's water value. 1.0 = vanilla. <1 = drier, smaller lakes. >1 = wetter. Affects preview and gameplay. Defaults: IdyllicValley 0.75, LowlandLakes 0.7, AlpineValleys 0.85, others 1.0.",
+                    order: 115, visibleWhen: visible));
             Reg(category, entries.FishingAreaMultiplier,
                 NewMeta("River Fishing Productivity Boost", min: 1, max: 8,
                     tooltip: "1 = vanilla (sparse), 4 = playable density, 8+ = lush",

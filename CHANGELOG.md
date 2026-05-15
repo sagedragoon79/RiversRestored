@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.4.5 — 2026-05-14
+
+### Added — Per-Preset Water Multiplier
+
+- **`WaterMultiplier` cfg entry per preset** ([Patches/WaterValueOverridePatch.cs](Patches/WaterValueOverridePatch.cs), [Plugin.cs](Plugin.cs)). Scales the seed's water value before terrain generation, so the same seed produces drier or wetter maps. Per-preset defaults: `IdyllicValley=0.75`, `LowlandLakes=0.7`, `AlpineValleys=0.85`, `AridHighlands=1.0`, `Plains=1.0`. Trims excess water on biomes that feel oversaturated once rivers are added. `1.0` = vanilla. Exposed in `MelonPreferences.cfg` under `[RiversRestored_<Preset>]` and as a slider in the Keep Clarity panel ("Preset · <Name>" → "Water Amount Multiplier", range 0.3–1.5). Slider's display name includes the preset's default in parentheses so users can revert without guessing.
+- **Applies to both preview and gameplay**. Harmony prefix + finalizer on `TerrainGeneratorController.GenerateInternal(bool)`. Asymmetric application by path:
+  - `game=true` (gameplay): modifies `SettingsManager.mapWaterValue` only. FF's `if (game)` block reads that into `tgc.water` at line 17792.
+  - `game=false` (preview): modifies `tgc.water` (instance field) only. FF skips the `if (game)` block, so the value RR's `PreviewGenWorker.ApplyTgcGenParameters` set from the decoded seed is what gets used.
+  - Modifying both fields on every gen (the v1 attempt) caused collateral mid-gen readers to see the modified `SettingsManager.mapWaterValue` and consume CERandom differently, producing different heightmap output between preview and gameplay even with identical seeds. Path-specific application keeps the gen pipeline deterministic.
+- Finalizer restores whichever field was modified so subsequent reads (UI display, save state, re-rolls) see the user's actual slider value.
+
+### Fixed
+
+- **Spurious preview overlay re-engaged after clicking "Start Settlement"** ([Patches/MapPreviewRenderer.cs](Patches/MapPreviewRenderer.cs)). `LateCarvePostfix` is hooked on FF's terrain gen stage carriers (Stage 40/50/60/70/97), which fire during BOTH preview gen AND actual gameplay terrain gen. After HardCancel ran (Start click → unload preview Map scene → load gameplay Map scene), FF's gameplay gen ran through those same carriers and `MapPreviewRenderer.TryRender` fired from a gameplay stage hook — writing a spurious PNG with `seed=''` and the preview overlay UI re-engaging with a progress bar ("preview goes black and starts generating another preview"). Gated `TryRender` behind `PreviewGenWorker.IsPreviewActive` so it only fires when the preview pipeline is actively requesting a gen, not during gameplay's own terrain pipeline.
+- **Two preview gens per panel-open with the same final seed**. The Advanced Settings panel became visible a few frames before FF finished writing the initial seed string into the input field. First-show fired with `seed=''`, kicking gen #1; the seed then populated, change-detect fired (`'' → '...'`), kicking gen #2. The user saw gen #2's preview but gameplay matched gen #1's RNG state (same seed value, but distinct RNG paths produced visibly different river-Voronoi outputs). Now defers first-show until `curSeedText` is non-empty — collapses to a single trigger and the visible preview's gen state matches what gameplay reproduces.
+- **Preview rendering still went through `LateCarvePostfix` during gameplay gen** even after the IsPreviewActive gate above — same root cause, single fix covers both surfaces.
+
 ## v1.4.4 — 2026-05-13 (hotfix)
 
 ### Fixed
