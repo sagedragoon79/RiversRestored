@@ -131,11 +131,16 @@ namespace RiversRestored.Patches
                     MethodInfo? bts03 = AccessTools.Method(builderType, "BuildTerrainShared03");
                     if (bts03 != null)
                     {
-                        var stub = typeof(RiverPersistence).GetMethod(
+                        var prefixStub = typeof(RiverPersistence).GetMethod(
+                            nameof(BuildTerrainShared03Prefix),
+                            BindingFlags.Static | BindingFlags.NonPublic);
+                        var postfixStub = typeof(RiverPersistence).GetMethod(
                             nameof(BuildTerrainShared03Postfix),
                             BindingFlags.Static | BindingFlags.NonPublic);
-                        harmony.Patch(bts03, postfix: new HarmonyMethod(stub));
-                        Log("Hooked Terrain2Builder.BuildTerrainShared03 (post-load river respawn point).");
+                        harmony.Patch(bts03,
+                            prefix: new HarmonyMethod(prefixStub),
+                            postfix: new HarmonyMethod(postfixStub));
+                        Log("Hooked Terrain2Builder.BuildTerrainShared03 (prefix=cp.y fix, postfix=river respawn).");
                     }
                     else
                     {
@@ -150,6 +155,102 @@ namespace RiversRestored.Patches
             catch (Exception ex)
             {
                 Log($"Apply failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Prefix on Terrain2Builder.BuildTerrainShared03 — fires BEFORE FF
+        /// creates WaterPath meshes from _generationData.rivers.  On fresh
+        /// gen, the ControlPoint cp.y values are at the Stage-38 trace
+        /// elevation (natural terrain, not the carved trench). We override
+        /// them to waterY (Sea Layer) so the ribbon mesh sits flat at the
+        /// water polygon surface instead of flying at mountain height.
+        /// On save-load the rivers list is empty so this is a no-op.
+        /// </summary>
+        private static void BuildTerrainShared03Prefix(Component __instance)
+        {
+            try
+            {
+                var tgType = AccessTools.TypeByName("TerrainGen.TerrainGenerator");
+                if (tgType == null) return;
+                var tgComp = __instance.GetComponent(tgType);
+                var tg = tgComp as TerrainGenerator ?? RiverSettingsPatch.CachedGenerator;
+                if (tg == null) return;
+
+                // On save-load the rivers list is empty — nothing to patch.
+                if (RiverSettingsPatch.IsLoadingSavedMap(tg)) return;
+
+                // waterY from computed GetWaterHeight (matches the carver's
+                // waterHeight). Sea Layer Y diverges on elevated terrain —
+                // on Alpine it's 3.15 while computed is 6.19, and the trench
+                // floor sits at 3.94. Using Sea Layer Y would put the ribbon
+                // underground (below the trench floor).
+                float waterY = ComputeWaterY(tg);
+                if (waterY <= 0f)
+                {
+                    var terrainGO2 = (tgComp as Component)?.gameObject;
+                    Transform? seaFallback = terrainGO2?.transform.Find("Sea Layer");
+                    waterY = seaFallback?.localPosition.y ?? 3.15f;
+                }
+                Log($"BTS03 prefix: using waterY={waterY:F2} from ComputeWaterY");
+
+                var gdField = AccessTools.Field(typeof(TerrainGenerator), "_generationData");
+                var gd = gdField?.GetValue(tg);
+                if (gd == null) return;
+                var riversField = gd.GetType().GetField("rivers",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var rivers = riversField?.GetValue(gd) as IList;
+                if (rivers == null || rivers.Count == 0) return;
+
+                int totalCps = 0;
+                float sumOrigY = 0f;
+                FieldInfo? posField = null;
+                FieldInfo? heightField = null;
+
+                foreach (var river in rivers)
+                {
+                    if (river == null) continue;
+                    var pointsField = river.GetType().GetField("points",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    var points = pointsField?.GetValue(river) as IList;
+                    if (points == null || points.Count == 0) continue;
+
+                    // Cache field references from the first CP
+                    if (posField == null)
+                    {
+                        var cpType = points[0]!.GetType();
+                        posField = cpType.GetField("pos",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        heightField = cpType.GetField("height",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (posField == null) return;
+                    }
+
+                    foreach (var cp in points)
+                    {
+                        if (cp == null) continue;
+                        var pos = (Vector3)posField.GetValue(cp);
+                        sumOrigY += pos.y;
+                        pos.y = waterY;
+                        posField.SetValue(cp, pos);
+                        totalCps++;
+
+                        // Ensure height >= waterY so SmoothAlpha keeps alpha > 0
+                        if (heightField != null)
+                        {
+                            float h = (float)heightField.GetValue(cp);
+                            if (h < waterY)
+                                heightField.SetValue(cp, waterY + 1f);
+                        }
+                    }
+                }
+
+                float avgOrig = totalCps > 0 ? sumOrigY / totalCps : 0f;
+                Log($"BTS03 prefix: {rivers.Count} rivers, {totalCps} cps, cp.y → waterY={waterY:F2} (saved avg={avgOrig:F2})");
+            }
+            catch (Exception ex)
+            {
+                Log($"BTS03 prefix exception: {ex.Message}");
             }
         }
 
@@ -305,6 +406,57 @@ namespace RiversRestored.Patches
                 // pattern of calling WaterPlane.Rebuild after a runtime
                 // polygon add.
                 ForceWaterPlaneRebuild(tg);
+
+                // ── Invalidate cachedAreas so FishingManager sees our rivers ─
+                // Same fix as v1.4.4 gen-path (RiverSettingsPatch post-Stage-60).
+                // FF's GetAllWaterAreas() is lazy-cached:
+                //   if (cachedAreas != null) return cachedAreas;
+                // The load pipeline populates cachedAreas before we re-add our
+                // river polygons, so FishingManager.Initialize reads the stale
+                // cache (missing rivers) → zero fish areas. Null it out so the
+                // next caller rebuilds from the real waterAreas list.
+                try
+                {
+                    var caField = tg.GetType().GetField("cachedAreas",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (caField != null)
+                    {
+                        caField.SetValue(tg, null);
+                        Log("BTS03 postfix: nulled cachedAreas — FishingManager will rebuild from real waterAreas.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"BTS03 postfix: failed to null cachedAreas: {ex.Message}");
+                }
+
+                // ── Refresh FishingManager.FindRivers ───────────────────────
+                // FishingManager.Initialize calls FindRivers before our BTS03
+                // postfix spawns WaterPaths, so riverInfos is empty. Re-call
+                // FindRivers now that WaterPaths exist so IsInRiver checks work
+                // for fishing shack placement.
+                if (ribbonsEnabled)
+                {
+                    try
+                    {
+                        Type? fmType = AccessTools.TypeByName("FishingManager");
+                        var fm = fmType != null ? UnityEngine.Object.FindObjectOfType(fmType) : null;
+                        if (fm != null)
+                        {
+                            var findRiversMI = fmType!.GetMethod("FindRivers",
+                                BindingFlags.NonPublic | BindingFlags.Instance);
+                            findRiversMI?.Invoke(fm, null);
+                            var riField = fmType.GetField("riverInfos",
+                                BindingFlags.NonPublic | BindingFlags.Instance);
+                            var ri = riField?.GetValue(fm) as IList;
+                            Log($"BTS03 postfix: refreshed FishingManager.FindRivers → {ri?.Count ?? -1} river(s)");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"BTS03 postfix: FindRivers refresh failed: {ex.Message}");
+                    }
+                }
 
                 RestoredThisLoad = true;
             }
@@ -501,16 +653,22 @@ namespace RiversRestored.Patches
 
                 if (isSave)
                 {
-                    // SAVE: always use the bare arg (the save name being
-                    // written this very moment). asf is unreliable on save —
-                    // it can still point at the previously loaded save.
+                    // SAVE: strip any slot folder from the arg and write to
+                    // a FLAT path (Save/{bareName}.rivers). FF creates a new
+                    // slot folder with a new timestamp on every save, so the
+                    // slot folder in the arg is ephemeral — on reload, asf
+                    // points to a DIFFERENT slot folder. Writing to the flat
+                    // path ensures load always finds it regardless of which
+                    // slot folder FF uses.
                     if (string.IsNullOrEmpty(saveNameOrPath))
                     {
                         Log("  empty save name — cannot write sidecar");
                         return string.Empty;
                     }
+                    string saveBare = Path.GetFileName(
+                        saveNameOrPath.Replace('/', Path.DirectorySeparatorChar));
                     string flatPath = Path.Combine(baseDir, folderName,
-                        saveNameOrPath + SIDECAR_EXTENSION)
+                        saveBare + SIDECAR_EXTENSION)
                         .Replace('/', Path.DirectorySeparatorChar);
                     string parent = Path.GetDirectoryName(flatPath) ?? "";
                     if (!string.IsNullOrEmpty(parent) && !Directory.Exists(parent))
@@ -518,34 +676,39 @@ namespace RiversRestored.Patches
                         Directory.CreateDirectory(parent);
                         Log($"  Created directory: {parent}");
                     }
-                    Log($"  → save target: {flatPath}");
+                    Log($"  → save target (flat): {flatPath}  (arg was '{saveNameOrPath}')");
                     return flatPath;
                 }
 
-                // LOAD: prefer canonical (slot-folder path), fall back to flat.
+                // LOAD: prefer flat path (what save always writes to), then
+                // fall back to canonical (slot-folder) path. Previous code
+                // checked canonical first, but save writes to flat path only —
+                // a stale sidecar at the canonical path from a previous gen
+                // would be loaded instead of the fresh flat-path sidecar,
+                // causing XZ mismatch between ribbon and carved channel.
                 string identifier = !string.IsNullOrEmpty(asf) ? asf : saveNameOrPath;
                 if (string.IsNullOrEmpty(identifier))
                 {
                     Log("  empty identifier — cannot resolve sidecar for load");
                     return string.Empty;
                 }
+                string bareName = Path.GetFileName(identifier.Replace('/', Path.DirectorySeparatorChar));
+                string flatLoad = Path.Combine(baseDir, folderName, bareName + SIDECAR_EXTENSION);
+                if (File.Exists(flatLoad))
+                {
+                    Log($"  → load flat (file exists): {flatLoad}");
+                    return flatLoad;
+                }
                 string canonical = Path.Combine(baseDir, folderName,
                     identifier + SIDECAR_EXTENSION)
                     .Replace('/', Path.DirectorySeparatorChar);
                 if (File.Exists(canonical))
                 {
-                    Log($"  → load canonical (file exists): {canonical}");
+                    Log($"  → load canonical fallback: {canonical}");
                     return canonical;
                 }
-                string bareName = Path.GetFileName(identifier.Replace('/', Path.DirectorySeparatorChar));
-                string flatLoad = Path.Combine(baseDir, folderName, bareName + SIDECAR_EXTENSION);
-                if (File.Exists(flatLoad))
-                {
-                    Log($"  → load flat fallback: {flatLoad}");
-                    return flatLoad;
-                }
-                Log($"  → no sidecar found at canonical {canonical} or flat {flatLoad}");
-                return canonical; // return canonical anyway so caller logs the expected path
+                Log($"  → no sidecar found at flat {flatLoad} or canonical {canonical}");
+                return flatLoad; // return flat anyway so caller logs the expected path
             }
             catch (Exception ex)
             {
@@ -1222,12 +1385,14 @@ namespace RiversRestored.Patches
                 Component? waterPlane = waterPlaneType != null ? seaLayer.GetComponent(waterPlaneType) : null;
                 if (waterPlane == null) { Log("Spawn: WaterPlane on Sea Layer missing"); return 0; }
 
-                // Use Sea Layer's actual Y as the water surface — vanilla uses
-                // this value too. Empirically more reliable than computing from
-                // settings (which gave a different value than the rendered surface).
-                float waterY = seaLayer.localPosition.y;
-                float computedY = ComputeWaterY(tg);
-                Log($"Spawn: waterY={waterY:F2} from Sea Layer  (computed would be {computedY:F2})");
+                // Use computed waterHeight (same as the carver's waterHeight).
+                // Sea Layer Y diverges on elevated terrain — on Alpine it's
+                // 3.15 while computed is 6.19, and the trench floor sits at
+                // 3.94. Using Sea Layer Y puts the ribbon underground.
+                float seaY = seaLayer.localPosition.y;
+                float waterY = ComputeWaterY(tg);
+                if (waterY <= 0f) waterY = seaY;
+                Log($"Spawn: waterY={waterY:F2} from ComputeWaterY  (Sea Layer={seaY:F2})");
 
                 // Get the prefab via WaterPlane.waterPathPrefab
                 var prefabField = waterPlaneType!.GetField("waterPathPrefab",
@@ -1307,6 +1472,8 @@ namespace RiversRestored.Patches
                 // Curves come per-river from sidecar (v2). v1 sidecars or
                 // missing curves fall through to a constant-opaque fallback.
 
+                Log($"Spawn: cp.y override to waterY={waterY:F2}");
+
                 foreach (var rd in rivers)
                 {
                     if (rd == null || rd.Points.Count < 2) continue;
@@ -1329,25 +1496,25 @@ namespace RiversRestored.Patches
                         matField?.SetValue(newWPComp, riverMaterial);
                     }
 
-                    // Build typed List<TerrainRiver.ControlPoint>.
-                    // Match vanilla Terrain2Builder.BuildTerrainShared03 (line
-                    // 17235 in Assembly-CSharp.decompiled.cs) — copy the
-                    // saved Stage-38 pos.y AS-IS. Stage 38's TraceRiverFunc
-                    // already clamps pos.y to >= waterHeight; the resulting
-                    // values typically range from waterHeight (at outlets)
-                    // up to ~16 m (at sources). The shader's transparency
-                    // curve is calibrated against (pos.y - terrain_height)
-                    // / pos.y — overriding pos.y to waterY collapses that
-                    // ratio to a near-zero region of the curve, rendering
-                    // the river fully transparent.
+                    // Override cp.y to waterY so ribbon mesh sits at
+                    // the water polygon surface. Sidecar saves cp.y at
+                    // Stage-38 natural terrain elevation (pre-carve); on
+                    // elevated maps that puts the ribbon at mountain height.
+                    // Transparency depth calc still works: terrain.GetHeight
+                    // returns the carved trench floor (below waterY).
                     var cpList = (IList)Activator.CreateInstance(cpListType)!;
+                    float ySumOriginal = 0f;
                     foreach (var p in pts)
                     {
+                        ySumOriginal += p.Pos.y;
+                        float cpHeight = p.Height > 0f ? p.Height : waterY + 1f;
                         var cp = cpCtor.Invoke(new object[] {
-                            p.Pos.x, p.Pos.y, p.Pos.z, p.Width, p.Height
+                            p.Pos.x, waterY, p.Pos.z, p.Width, cpHeight
                         });
                         cpList.Add(cp);
                     }
+                    float avgSaved = pts.Count > 0 ? ySumOriginal / pts.Count : 0f;
+                    Log($"  river: {pts.Count} cps, cp.y → waterY={waterY:F2} (saved avg={avgSaved:F2})");
 
                     // Call SetPoints
                     try
@@ -1357,16 +1524,14 @@ namespace RiversRestored.Patches
                         });
                         spawned++;
 
-                        // Post-spawn diagnostics: is the visual actually configured?
-                        if (spawned <= 2) // log first 2 to avoid spam
+                        if (spawned <= 2)
                         {
                             var go = newWPComp.gameObject;
                             var mf = go.GetComponent<MeshFilter>();
                             var mr = go.GetComponent<MeshRenderer>();
                             int verts = mf?.mesh != null ? mf.mesh.vertexCount : -1;
                             string matName = mr?.sharedMaterial != null ? mr.sharedMaterial.name : "NULL";
-                            bool active = go.activeInHierarchy;
-                            Log($"  WP #{spawned}: active={active}  vertices={verts}  rendererMaterial={matName}  pos={newWPComp.transform.position}");
+                            Log($"  WP #{spawned}: verts={verts}  mat={matName}  pos={newWPComp.transform.position}");
                         }
                     }
                     catch (Exception ex)

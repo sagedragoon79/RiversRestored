@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.0 — 2026-05-18
+
+### Fixed
+
+- **Sidecar not found on save/reload** ([Patches/RiverPersistence.cs](Patches/RiverPersistence.cs)). Root cause: FF creates a new slot folder with a fresh timestamp on every save (`Arkham_2026075203052/` -> `Arkham_2026185173135/`). The sidecar was written into the slot folder from the save arg, but on reload `activeSaveFileName` pointed to a different slot folder. Neither the flat path nor the canonical path matched the original write location. Fix: save now strips the slot folder via `Path.GetFileName()` and writes to a flat path (`Save/{bareName}.rivers`). Load checks flat first, canonical as fallback. Sidecar reliably survives save-over and reload regardless of FF's ephemeral slot folder naming.
+- **Ribbon mesh underground on elevated terrain** ([Patches/RiverPersistence.cs](Patches/RiverPersistence.cs)). On Alpine Valleys, Sea Layer Y (3.15) diverges from computed waterHeight (6.19). The trench floor sits at 3.94 — using Sea Layer Y put the ribbon below the trench floor, making it invisible. Both `SpawnWaterPathsFromSidecar` (reload) and `BuildTerrainShared03Prefix` (fresh gen) now use `ComputeWaterY()` (which calls `GetWaterHeight()`), falling back to Sea Layer Y only if computation fails. Ribbon sits at the correct water surface on all terrain elevations.
+- **Fish areas empty on reload (fishAreas.Count=0)** ([Patches/FishingShackPatch.cs](Patches/FishingShackPatch.cs)). `FishingManager.Initialize` skips all fish-area creation on loaded games (`isLoadedGame` gate) — it expects `FishingManager.Load()` to deserialize them from the save. But ES2 deserialization silently returns empty when FishArea objects reference Unity types that don't survive serialization. Fix: added a prefix on `FishingManager.Initialize` that detects empty fishAreas on a loaded game and temporarily flips `isLoadedGame` to false so Initialize's own creation logic runs from `GetAllWaterAreas()`. Postfix restores the flag.
+
+### Added
+
+- **`FindRivers` refresh in BTS03 postfix**. After spawning WaterPath objects from sidecar, re-calls `FishingManager.FindRivers()` so the fishing system's `IsInRiver` placement checks recognize the newly-spawned ribbon geometry.
+
 ## v1.4.6 — 2026-05-14
 
 ### Added — Per-Preset Water Multiplier

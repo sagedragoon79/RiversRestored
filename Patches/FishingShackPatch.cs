@@ -35,6 +35,12 @@ namespace RiversRestored.Patches
         /// CreateFishingAreas postfix to decide which entries to multiply.</summary>
         public static readonly HashSet<int> RiverFishAreaIds = new HashSet<int>();
 
+        /// <summary>Set by prefix, read by postfix. When true, the prefix
+        /// temporarily forced isLoadedGame=false so Initialize creates fish
+        /// areas from scratch (because FishingManager.Load() deserialization
+        /// returned empty). Postfix restores the original value.</summary>
+        private static bool _forcedIsLoadedGameFalse = false;
+
         public static void Apply(HarmonyLib.Harmony harmony)
         {
             try
@@ -91,11 +97,16 @@ namespace RiversRestored.Patches
                         BindingFlags.Public | BindingFlags.Instance);
                     if (initMI != null)
                     {
-                        var diag = typeof(FishingShackPatch).GetMethod(
+                        var prefixStub = typeof(FishingShackPatch).GetMethod(
+                            nameof(FishingManagerInitializePrefix),
+                            BindingFlags.Static | BindingFlags.NonPublic);
+                        var postfixStub = typeof(FishingShackPatch).GetMethod(
                             nameof(FishingManagerInitializePostfix),
                             BindingFlags.Static | BindingFlags.NonPublic);
-                        harmony.Patch(initMI, postfix: new HarmonyMethod(diag));
-                        Log("Hooked FishingManager.Initialize (diagnostic dump).");
+                        harmony.Patch(initMI,
+                            prefix: new HarmonyMethod(prefixStub),
+                            postfix: new HarmonyMethod(postfixStub));
+                        Log("Hooked FishingManager.Initialize (prefix=fish safety net, postfix=diagnostic dump).");
                     }
                 }
             }
@@ -157,16 +168,118 @@ namespace RiversRestored.Patches
             }
         }
 
+        /// <summary>Prefix on FishingManager.Initialize — safety net for reload.
+        ///
+        /// On a loaded game, Initialize skips all fish-area creation (lakes AND
+        /// rivers) because it expects FishingManager.Load() to have deserialized
+        /// them from the save. But Load() uses ES2 to deserialize
+        /// <c>Dictionary&lt;int, FishArea&gt;</c>, which can silently return an
+        /// empty dict when the FishArea objects reference Unity types that don't
+        /// survive serialization (vanilla FF never exercises river FishAreas).
+        ///
+        /// Fix: if fishAreas is empty AND this is a loaded game, temporarily
+        /// flip <c>isLoadedGame</c> to false so Initialize's own creation logic
+        /// runs. The postfix restores the flag.</summary>
+        private static void FishingManagerInitializePrefix(object __instance)
+        {
+            _forcedIsLoadedGameFalse = false;
+            try
+            {
+                // Get GameManager.isLoadedGame
+                Type? gmType = AccessTools.TypeByName("GameManager");
+                if (gmType == null) return;
+                var gmInstance = UnityEngine.Object.FindObjectOfType(gmType);
+                if (gmInstance == null) return;
+
+                var isLoadedProp = gmType.GetProperty("isLoadedGame",
+                    BindingFlags.Public | BindingFlags.Instance);
+                if (isLoadedProp == null) return;
+                bool isLoaded = (bool)(isLoadedProp.GetValue(gmInstance) ?? false);
+                if (!isLoaded) return; // fresh gen — Initialize will create normally
+
+                // Check if fishAreas is empty (Load() deserialization failed)
+                Type fmType = __instance.GetType();
+                var faField = fmType.GetField("fishAreas",
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                var fishAreas = faField?.GetValue(__instance) as System.Collections.IDictionary;
+                if (fishAreas != null && fishAreas.Count > 0) return; // Load() worked
+
+                // fishAreas is empty on a loaded game — force Initialize to create them.
+                // Set isLoadedGame=false via property setter or backing field.
+                bool set = false;
+                // Try 1: property setter (protected set is accessible via reflection)
+                var setter = isLoadedProp.GetSetMethod(true); // true = include non-public
+                if (setter != null)
+                {
+                    setter.Invoke(gmInstance, new object[] { false });
+                    set = true;
+                }
+                // Try 2: backing field (name varies by compiler)
+                if (!set)
+                {
+                    foreach (string candidate in new[] {
+                        "<isLoadedGame>k__BackingField",
+                        "isLoadedGame",
+                        "_isLoadedGame",
+                        "m_isLoadedGame" })
+                    {
+                        var bf = gmType.GetField(candidate,
+                            BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (bf != null && bf.FieldType == typeof(bool))
+                        {
+                            bf.SetValue(gmInstance, false);
+                            set = true;
+                            break;
+                        }
+                    }
+                }
+                if (set)
+                {
+                    _forcedIsLoadedGameFalse = true;
+                    Log("FishingManager.Initialize PREFIX: fishAreas empty on loaded game — temporarily forcing isLoadedGame=false for fish-area creation.");
+                }
+                else
+                {
+                    Log("FishingManager.Initialize PREFIX: could not set isLoadedGame — cannot force fish creation.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"FishingManagerInitializePrefix exception: {ex.Message}");
+            }
+        }
+
         /// <summary>Observability: log FishArea / riverInfo counts at the
-        /// end of FishingManager.Initialize. Cheap (one log line) and gives
-        /// a fast signal if lake-FishArea creation regresses again — e.g.
-        /// the v1.4.4 cachedAreas-stale-empty bug presented as
-        /// `fishAreas.Count = riverInfos.Count` (zero lake FishAreas built).
-        /// </summary>
+        /// end of FishingManager.Initialize. Also restores isLoadedGame if
+        /// the prefix temporarily forced it to false.</summary>
         private static void FishingManagerInitializePostfix(object __instance)
         {
             try
             {
+                // Restore isLoadedGame if prefix forced it
+                if (_forcedIsLoadedGameFalse)
+                {
+                    _forcedIsLoadedGameFalse = false;
+                    try
+                    {
+                        Type? gmType = AccessTools.TypeByName("GameManager");
+                        var gmInstance = gmType != null ? UnityEngine.Object.FindObjectOfType(gmType) : null;
+                        if (gmInstance != null)
+                        {
+                            var prop = gmType!.GetProperty("isLoadedGame",
+                                BindingFlags.Public | BindingFlags.Instance);
+                            var setter = prop?.GetSetMethod(true);
+                            if (setter != null)
+                                setter.Invoke(gmInstance, new object[] { true });
+                            Log("FishingManager.Initialize POSTFIX: restored isLoadedGame=true.");
+                        }
+                    }
+                    catch (Exception rex)
+                    {
+                        Log($"FishingManager.Initialize POSTFIX: failed to restore isLoadedGame: {rex.Message}");
+                    }
+                }
+
                 Type fmType = __instance.GetType();
                 var faField = fmType.GetField("fishAreas",
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
