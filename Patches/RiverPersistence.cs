@@ -247,6 +247,28 @@ namespace RiversRestored.Patches
 
                 float avgOrig = totalCps > 0 ? sumOrigY / totalCps : 0f;
                 Log($"BTS03 prefix: {rivers.Count} rivers, {totalCps} cps, cp.y → waterY={waterY:F2} (saved avg={avgOrig:F2})");
+
+                // ── Ribbon suppression ──────────────────────────────────────
+                // FF's own BTS03 iterates _generationData.rivers and creates
+                // WaterPath ribbon objects — it doesn't check our toggle. If
+                // ribbons are disabled, cache the data for sidecar save then
+                // clear the list so BTS03 creates no ribbons.
+                bool ribbonsEnabled = RiversRestoredMod.EnableRibbonAnimation?.Value ?? true;
+                if (!ribbonsEnabled)
+                {
+                    // Cache for sidecar save before clearing
+                    try
+                    {
+                        var cached = ConvertLiveRiversToRiverData(rivers);
+                        if (cached.Count > 0)
+                        {
+                            CachedSidecarData = cached;
+                            Log($"BTS03 prefix: ribbons disabled — cached {cached.Count} river(s) for sidecar, clearing rivers list.");
+                        }
+                    }
+                    catch (Exception cex) { Log($"BTS03 prefix: cache-before-clear failed: {cex.Message}"); }
+                    rivers.Clear();
+                }
             }
             catch (Exception ex)
             {
