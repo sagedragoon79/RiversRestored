@@ -205,42 +205,64 @@ namespace RiversRestored.Patches
                 if (fishAreas != null && fishAreas.Count > 0) return; // Load() worked
 
                 // fishAreas is empty on a loaded game — force Initialize to create them.
-                // Set isLoadedGame=false via property setter or backing field.
+                // GameManager.isLoadedGame is a computed property that delegates
+                // to PreGameInitializer.isLoadedGame (which IS an auto-prop with
+                // a protected setter). We need to go through the chain:
+                //   GameManager._preGameInitializer → PreGameInitializer.isLoadedGame
                 bool set = false;
-                // Try 1: property setter (protected set is accessible via reflection)
-                var setter = isLoadedProp.GetSetMethod(true); // true = include non-public
-                if (setter != null)
+                try
                 {
-                    setter.Invoke(gmInstance, new object[] { false });
-                    set = true;
-                }
-                // Try 2: backing field (name varies by compiler)
-                if (!set)
-                {
-                    foreach (string candidate in new[] {
-                        "<isLoadedGame>k__BackingField",
-                        "isLoadedGame",
-                        "_isLoadedGame",
-                        "m_isLoadedGame" })
+                    // Get PreGameInitializer via GameManager.preGameInitializer property
+                    var pgiProp = gmType.GetProperty("preGameInitializer",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    var pgiField = gmType.GetField("_preGameInitializer",
+                        BindingFlags.NonPublic | BindingFlags.Instance);
+                    object? pgi = pgiProp?.GetValue(gmInstance)
+                                  ?? pgiField?.GetValue(gmInstance);
+                    if (pgi != null)
                     {
-                        var bf = gmType.GetField(candidate,
-                            BindingFlags.NonPublic | BindingFlags.Instance);
-                        if (bf != null && bf.FieldType == typeof(bool))
+                        Type pgiType = pgi.GetType();
+                        // Try the property setter on PreGameInitializer
+                        var pgiIsLoadedProp = pgiType.GetProperty("isLoadedGame",
+                            BindingFlags.Public | BindingFlags.Instance);
+                        var pgiSetter = pgiIsLoadedProp?.GetSetMethod(true);
+                        if (pgiSetter != null)
                         {
-                            bf.SetValue(gmInstance, false);
+                            pgiSetter.Invoke(pgi, new object[] { false });
                             set = true;
-                            break;
+                        }
+                        // Fallback: backing field on PreGameInitializer
+                        if (!set)
+                        {
+                            foreach (string candidate in new[] {
+                                "<isLoadedGame>k__BackingField",
+                                "_isLoadedGame",
+                                "isLoadedGame" })
+                            {
+                                var bf = pgiType.GetField(candidate,
+                                    BindingFlags.NonPublic | BindingFlags.Instance);
+                                if (bf != null && bf.FieldType == typeof(bool))
+                                {
+                                    bf.SetValue(pgi, false);
+                                    set = true;
+                                    break;
+                                }
+                            }
                         }
                     }
+                }
+                catch (Exception pgiEx)
+                {
+                    Log($"FishingManager.Initialize PREFIX: PGI access failed: {pgiEx.Message}");
                 }
                 if (set)
                 {
                     _forcedIsLoadedGameFalse = true;
-                    Log("FishingManager.Initialize PREFIX: fishAreas empty on loaded game — temporarily forcing isLoadedGame=false for fish-area creation.");
+                    Log("FishingManager.Initialize PREFIX: fishAreas empty on loaded game — temporarily forcing isLoadedGame=false via PreGameInitializer.");
                 }
                 else
                 {
-                    Log("FishingManager.Initialize PREFIX: could not set isLoadedGame — cannot force fish creation.");
+                    Log("FishingManager.Initialize PREFIX: could not set isLoadedGame on PreGameInitializer — cannot force fish creation.");
                 }
             }
             catch (Exception ex)
@@ -266,12 +288,22 @@ namespace RiversRestored.Patches
                         var gmInstance = gmType != null ? UnityEngine.Object.FindObjectOfType(gmType) : null;
                         if (gmInstance != null)
                         {
-                            var prop = gmType!.GetProperty("isLoadedGame",
+                            // Same PGI chain as prefix
+                            var pgiProp = gmType!.GetProperty("preGameInitializer",
                                 BindingFlags.Public | BindingFlags.Instance);
-                            var setter = prop?.GetSetMethod(true);
-                            if (setter != null)
-                                setter.Invoke(gmInstance, new object[] { true });
-                            Log("FishingManager.Initialize POSTFIX: restored isLoadedGame=true.");
+                            var pgiField = gmType.GetField("_preGameInitializer",
+                                BindingFlags.NonPublic | BindingFlags.Instance);
+                            object? pgi = pgiProp?.GetValue(gmInstance)
+                                          ?? pgiField?.GetValue(gmInstance);
+                            if (pgi != null)
+                            {
+                                var pgiIsLoadedProp = pgi.GetType().GetProperty("isLoadedGame",
+                                    BindingFlags.Public | BindingFlags.Instance);
+                                var setter = pgiIsLoadedProp?.GetSetMethod(true);
+                                if (setter != null)
+                                    setter.Invoke(pgi, new object[] { true });
+                            }
+                            Log("FishingManager.Initialize POSTFIX: restored isLoadedGame=true via PreGameInitializer.");
                         }
                     }
                     catch (Exception rex)

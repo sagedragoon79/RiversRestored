@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.5.1 — 2026-05-19
+
+### Fixed
+
+- **Fish areas not created on reload** ([Patches/FishingShackPatch.cs](Patches/FishingShackPatch.cs)). `GameManager.isLoadedGame` is a computed property that delegates to `PreGameInitializer.isLoadedGame` — it has no setter or backing field on GameManager itself. Previous attempts to flip it via GameManager always failed silently. Now traverses through `GameManager._preGameInitializer` to reach the actual auto-property on `PreGameInitializer`, which has a protected setter accessible via reflection.
+- **Preview rivers lost on gameplay gen** ([Patches/RiverSettingsPatch.cs](Patches/RiverSettingsPatch.cs)). Preview and gameplay generate different heightmaps from the same seed (different CERandom consumption order in the sliced pipeline), so the Voronoi pathfinder often produced different rivers — or none at all — in gameplay. Now caches preview-gen river paths and replays them into gameplay gen, guaranteeing the user gets the rivers they approved in preview.
+
+### Changed
+
+- **Retuned all preset defaults** to match playtested values across all five biomes. Key changes: narrower inner channels (InnerRadius=2) with wider water polygons (BlobRadius=7-10), higher jitter for natural meander, more smoothing passes (10-12), and adjusted river counts per biome (IdyllicValley=5, LowlandLakes=12, AridHighlands=2, Plains=1, AlpineValleys=2).
+
 ## v1.5.0 — 2026-05-18
 
 ### Fixed

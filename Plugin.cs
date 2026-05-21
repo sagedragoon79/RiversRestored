@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.5.0", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.5.1", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -328,40 +328,33 @@ namespace RiversRestored
             //   • SmoothPasses=8 — extra smoothing for the wider slope.
             [RiverPresetMode.IdyllicValley] = new RiverPresetValues
             {
-                NumRivers = 4, MinPoints = 15,
-                MinWidth = 8, MaxWidth = 12,    // ribbon hides the 8-cell water polygon
-                InnerRadius = 4, OuterRadius = 12, BlobRadius = 4, BlobStride = 3,
-                TrenchDepth = 3.0f, SmoothPasses = 8,
-                JitterAmplitude = 1.5f, JitterFrequency = 0.6f,
-                FishingAreaMultiplier = 4,
-                WaterMultiplier = 0.75f,        // adding rivers makes IdyllicValley feel oversaturated; default trims back
+                NumRivers = 5, MinPoints = 25,
+                MinWidth = 6, MaxWidth = 8,
+                InnerRadius = 2, OuterRadius = 8, BlobRadius = 7, BlobStride = 3,
+                TrenchDepth = 3.0f, SmoothPasses = 12,
+                JitterAmplitude = 5.0f, JitterFrequency = 3.0f,
+                FishingAreaMultiplier = 8,
+                WaterMultiplier = 0.90f,
             },
-            // LowlandLakes: flat with ponds. Aggressive count + short paths,
-            // but polygon footprint matched to IdyllicValley so the merged
-            // shape clears FF's Lake-area threshold (otherwise reload tags
-            // it as Pond and water can fail to render).
             [RiverPresetMode.LowlandLakes] = new RiverPresetValues
             {
-                NumRivers = 8, MinPoints = 6,
-                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
-                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
-                TrenchDepth = 1.2f, SmoothPasses = 8,
-                JitterAmplitude = 0.8f, JitterFrequency = 0.4f,
-                FishingAreaMultiplier = 5,
-                WaterMultiplier = 0.7f,         // LowlandLakes is wet by name; with rivers added it's swampy. Trim further than IdyllicValley.
+                NumRivers = 12, MinPoints = 10,
+                MinWidth = 4, MaxWidth = 8,
+                InnerRadius = 2, OuterRadius = 8, BlobRadius = 7, BlobStride = 3,
+                TrenchDepth = 1.9f, SmoothPasses = 10,
+                JitterAmplitude = 2.8f, JitterFrequency = 0.45f,
+                FishingAreaMultiplier = 7,
+                WaterMultiplier = 0.85f,
             },
-            // AridHighlands: high but dry. Fewer rivers, deeper trenches to
-            // read as rocky. Polygon footprint matched to IdyllicValley so
-            // the merged shape clears FF's Lake-area threshold.
             [RiverPresetMode.AridHighlands] = new RiverPresetValues
             {
-                NumRivers = 3, MinPoints = 18,
-                MinWidth = 8, MaxWidth = 12,    // ribbon inset within 12-cell polygon
-                InnerRadius = 6, OuterRadius = 10, BlobRadius = 6, BlobStride = 3,
-                TrenchDepth = 2.5f, SmoothPasses = 5,
+                NumRivers = 2, MinPoints = 30,
+                MinWidth = 4, MaxWidth = 8,
+                InnerRadius = 2, OuterRadius = 12, BlobRadius = 7, BlobStride = 3,
+                TrenchDepth = 2.25f, SmoothPasses = 12,
                 JitterAmplitude = 1.0f, JitterFrequency = 0.5f,
-                FishingAreaMultiplier = 3,
-                WaterMultiplier = 1.0f,         // AridHighlands is dry; no trim needed
+                FishingAreaMultiplier = 4,
+                WaterMultiplier = 1.0f,
             },
             // Plains: single long river bisecting the map. One dominant
             // waterway, deep and meandering, edge-to-edge. Terrain is open
@@ -385,25 +378,23 @@ namespace RiversRestored
             //     map's centerpiece feature.
             [RiverPresetMode.Plains] = new RiverPresetValues
             {
-                NumRivers = 1, MinPoints = 35,         // single long river
-                MinWidth = 14, MaxWidth = 18,          // major-river ribbon
-                InnerRadius = 5, OuterRadius = 14, BlobRadius = 5, BlobStride = 3,
-                TrenchDepth = 4.0f, SmoothPasses = 10, // deep + very smooth banks
-                JitterAmplitude = 2.5f, JitterFrequency = 0.4f, // sweeping bends
-                FishingAreaMultiplier = 8,             // sole river is the food source
-                WaterMultiplier = 1.0f,                // sparse-water biome; river is the centerpiece, leave lakes alone
+                NumRivers = 1, MinPoints = 30,
+                MinWidth = 9, MaxWidth = 12,
+                InnerRadius = 6, OuterRadius = 12, BlobRadius = 10, BlobStride = 2,
+                TrenchDepth = 3.0f, SmoothPasses = 12,
+                JitterAmplitude = 5.0f, JitterFrequency = 1.56f,
+                FishingAreaMultiplier = 5,
+                WaterMultiplier = 1.0f,
             },
-            // AlpineValleys: mountains/valleys. Long deep alpine drainages
-            // with wide gradual banks and strong meander.
             [RiverPresetMode.AlpineValleys] = new RiverPresetValues
             {
-                NumRivers = 4, MinPoints = 20,
-                MinWidth = 10, MaxWidth = 14,   // big rivers in 12-cell polygon
-                InnerRadius = 6, OuterRadius = 12, BlobRadius = 6, BlobStride = 3,
-                TrenchDepth = 3.0f, SmoothPasses = 4,
-                JitterAmplitude = 2.5f, JitterFrequency = 0.6f,
-                FishingAreaMultiplier = 4,
-                WaterMultiplier = 0.85f,        // alpine drainages are dry-ish; mild trim
+                NumRivers = 2, MinPoints = 35,
+                MinWidth = 6, MaxWidth = 11,
+                InnerRadius = 2, OuterRadius = 12, BlobRadius = 8, BlobStride = 2,
+                TrenchDepth = 2.25f, SmoothPasses = 12,
+                JitterAmplitude = 4.1f, JitterFrequency = 1.5f,
+                FishingAreaMultiplier = 6,
+                WaterMultiplier = 1.0f,
             },
         };
 

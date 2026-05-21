@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Linq;
 using System.Reflection;
 using HarmonyLib;
@@ -42,6 +43,14 @@ namespace RiversRestored.Patches
         // Cached reflected MethodInfos for the river stages we're injecting.
         private static MethodInfo? _miStage38;
         private static MethodInfo? _miStage60;
+
+        /// <summary>River CPs cached from the last PREVIEW gen. Preview and
+        /// gameplay generate different heightmaps from the same seed (different
+        /// CERandom consumption order), so the Voronoi pathfinder often produces
+        /// different rivers — or none at all — in gameplay. By caching the
+        /// preview's river paths and replaying them into gameplay gen, the user
+        /// gets the rivers they approved in preview.</summary>
+        private static System.Collections.IList? _cachedPreviewRivers = null;
 
         public static void Apply(HarmonyLib.Harmony harmony)
         {
@@ -429,6 +438,76 @@ namespace RiversRestored.Patches
             {
                 RiversRestoredMod.Log.Msg(
                     "[RR] >>> Injecting Stage 38 (RiverPaths) after Stage 37 (PreWater)…");
+
+                bool isPreview = PreviewGenWorker.IsPreviewActive;
+
+                // ── Gameplay gen with cached preview rivers ──
+                // Preview and gameplay produce different heightmaps from the
+                // same seed (different CERandom consumption), so the Voronoi
+                // pathfinder often finds different rivers — or none. Replay
+                // the preview's rivers so the user gets what they approved.
+                if (!isPreview && _cachedPreviewRivers != null && _cachedPreviewRivers.Count > 0)
+                {
+                    var tgType2 = __instance.GetType();
+                    var gdField2 = tgType2.GetField("_generationData",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    var gd2 = gdField2?.GetValue(__instance);
+                    var riversField2 = gd2?.GetType().GetField("rivers",
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (riversField2 != null && gd2 != null)
+                    {
+                        // Deep-copy the cached rivers into the gameplay gen's
+                        // _generationData.rivers so the carver/WaterPath builder
+                        // picks them up exactly as preview generated them.
+                        var liveRivers = riversField2.GetValue(gd2) as IList;
+                        if (liveRivers != null)
+                        {
+                            liveRivers.Clear();
+                            int totalCps = 0;
+                            foreach (var r in _cachedPreviewRivers)
+                            {
+                                liveRivers.Add(r);
+                                var ptsField = r?.GetType().GetField("points",
+                                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                var pts = ptsField?.GetValue(r) as IList;
+                                totalCps += pts?.Count ?? 0;
+                            }
+                            // Also initialize riverHeights (Stage 38 normally does this).
+                            // The carver needs it. Copy from heightNoise.
+                            try
+                            {
+                                var hnField = gd2.GetType().GetField("heightNoise",
+                                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                var hn = hnField?.GetValue(gd2) as float[,];
+                                if (hn != null)
+                                {
+                                    var msField = tgType2.GetField("mapSettings",
+                                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                    var ms = msField?.GetValue(__instance);
+                                    int hmRes = (int)(ms?.GetType().GetField("heightmapResolution")?.GetValue(ms) ?? 512);
+                                    var rhField = tgType2.GetField("riverHeights",
+                                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                    if (rhField != null)
+                                    {
+                                        var rh = new float[hmRes, hmRes];
+                                        for (int i = 0; i < hmRes; i++)
+                                            for (int j = 0; j < hmRes; j++)
+                                                rh[j, i] = hn[j, i];
+                                        rhField.SetValue(__instance, rh);
+                                    }
+                                }
+                            }
+                            catch (Exception rhEx) { RiversRestoredMod.Log.Msg($"[RR] riverHeights init: {rhEx.Message}"); }
+
+                            RiversRestoredMod.Log.Msg(
+                                $"[RR] <<< Replayed {_cachedPreviewRivers.Count} cached preview river(s) " +
+                                $"({totalCps} total cps) into gameplay gen — skipped Voronoi pathfinder.");
+                            _cachedPreviewRivers = null; // consumed
+                            goto postStage38;
+                        }
+                    }
+                }
+
                 // ── Apply directional flow bias to heightmap (if cfg set) ──
                 // This tilts _generationData.heightNoise so the Voronoi
                 // pathfinder finds drainage paths preferentially in the
@@ -439,6 +518,42 @@ namespace RiversRestored.Patches
                 _miStage38.Invoke(__instance, null);
                 RiversRestoredMod.Log.Msg(
                     "[RR] <<< Stage 38 injection completed without exception.");
+
+                // ── Cache rivers from preview gen for gameplay replay ──
+                if (isPreview)
+                {
+                    try
+                    {
+                        var tgType3 = __instance.GetType();
+                        var gdField3 = tgType3.GetField("_generationData",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        var gd3 = gdField3?.GetValue(__instance);
+                        var riversField3 = gd3?.GetType().GetField("rivers",
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        var rivers3 = riversField3?.GetValue(gd3) as IList;
+                        if (rivers3 != null && rivers3.Count > 0)
+                        {
+                            _cachedPreviewRivers = rivers3;
+                            int totalCps = 0;
+                            foreach (var r in rivers3)
+                            {
+                                var ptsField = r?.GetType().GetField("points",
+                                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                var pts = ptsField?.GetValue(r) as IList;
+                                totalCps += pts?.Count ?? 0;
+                            }
+                            RiversRestoredMod.Log.Msg(
+                                $"[RR] Cached {rivers3.Count} preview river(s) ({totalCps} cps) for gameplay replay.");
+                        }
+                        else
+                        {
+                            _cachedPreviewRivers = null;
+                        }
+                    }
+                    catch (Exception cx) { RiversRestoredMod.Log.Msg($"[RR] Preview river cache: {cx.Message}"); }
+                }
+
+                postStage38:;
 
                 // ── First WaterArea registration pass (early/visibility) ──
                 // FishingManager allocates fish nodes somewhere between
