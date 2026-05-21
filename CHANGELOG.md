@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.2 — 2026-05-21
+
+### Fixed
+
+- **Ribbon toggle not fully respected** ([Patches/RiverPersistence.cs](Patches/RiverPersistence.cs)). FF's own `BuildTerrainShared03` iterates `_generationData.rivers` and creates WaterPath ribbon objects — it doesn't check our `EnableRibbonAnimation` toggle. Our gates covered Stage 60 (gen) and `SpawnWaterPathsFromSidecar` (reload), but missed this third path. BTS03 prefix now checks the toggle after fixing cp.y; when disabled, caches river data for sidecar save then clears the list so FF creates no ribbons. Static water polygon is unaffected. Toggle works on existing saves — just flip the setting and reload.
+
 ## v1.5.1 — 2026-05-19
 
 ### Fixed
