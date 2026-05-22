@@ -324,6 +324,57 @@ namespace RiversRestored.Patches
                 int totalRiver = riverInfos?.Count ?? -1;
 
                 int lakeFa = totalFa - totalRiver;
+
+                // ── Scale fish population on river FishAreas ────────────────
+                // RR rivers are stamped as small lake polygons — their physical
+                // area is small, so GetFishDataForWaterArea gives them a low
+                // maxFish cap (~297). Duplicating FishArea references in
+                // CreateFishingAreas doesn't help — all duplicates share the
+                // same fish pool. Instead, scale the actual fish population
+                // (maxFish + fishCount) on each river FishArea so the pool
+                // matches the intended multiplier.
+                if (fishAreas != null && RiverFishAreaIds.Count > 0)
+                {
+                    int multiplier = RiversRestoredMod.GetEffectiveValues().FishingAreaMultiplier;
+                    if (multiplier > 1)
+                    {
+                        int scaled = 0;
+                        foreach (int rId in RiverFishAreaIds)
+                        {
+                            if (!fishAreas.Contains(rId)) continue;
+                            var fa = fishAreas[rId];
+                            if (fa == null) continue;
+                            try
+                            {
+                                Type faType = fa.GetType();
+                                // maxFish { get; private set; } — use backing field
+                                var maxFishBF = faType.GetField("<maxFish>k__BackingField",
+                                    BindingFlags.NonPublic | BindingFlags.Instance);
+                                var fishCountBF = faType.GetField("<fishCount>k__BackingField",
+                                    BindingFlags.NonPublic | BindingFlags.Instance);
+                                if (maxFishBF != null)
+                                {
+                                    int origMax = (int)maxFishBF.GetValue(fa);
+                                    int newMax = origMax * multiplier;
+                                    maxFishBF.SetValue(fa, newMax);
+                                    if (fishCountBF != null)
+                                    {
+                                        int origCount = (int)fishCountBF.GetValue(fa);
+                                        int newCount = origCount * multiplier;
+                                        fishCountBF.SetValue(fa, newCount);
+                                    }
+                                    scaled++;
+                                    if (scaled <= 4)
+                                        Log($"  River FishArea id={rId}: maxFish {origMax} → {newMax} ({multiplier}×)");
+                                }
+                            }
+                            catch (Exception fex) { Log($"  Fish scale id={rId}: {fex.Message}"); }
+                        }
+                        if (scaled > 0)
+                            Log($"Scaled fish population on {scaled} river FishArea(s) by {multiplier}×");
+                    }
+                }
+
                 Log($"FishingManager.Initialize done. fishAreas.Count={totalFa} (lakes={lakeFa}, rivers={totalRiver})");
             }
             catch (Exception ex)
@@ -391,7 +442,12 @@ namespace RiversRestored.Patches
         /// list of in-radius fishing areas. Adding duplicate entries
         /// inflates the count above FishingManager.numAreasForFullBonus,
         /// killing the productivity penalty. Vanilla lake/ocean entries
-        /// untouched (they're not in RiverFishAreaIds).</summary>
+        /// untouched (they're not in RiverFishAreaIds).
+        ///
+        /// IDEMPOTENT: collects unique river areas, strips ALL existing
+        /// river entries (including any previous duplicates), then re-adds
+        /// exactly multiplier copies of each unique. Safe to call multiple
+        /// times — result is always unique_count × multiplier.</summary>
         private static void CreateFishingAreasPostfix(IList __result)
         {
             try
@@ -400,25 +456,34 @@ namespace RiversRestored.Patches
                 if (multiplier <= 1 || __result == null || __result.Count == 0) return;
                 if (RiverFishAreaIds.Count == 0) return;
 
-                int origCount = __result.Count;
-                int riverAreasFound = 0;
-
-                for (int i = 0; i < origCount; i++)
+                // Collect unique river areas
+                var uniqueRiverAreas = new System.Collections.Generic.List<object>();
+                var seenIds = new HashSet<int>();
+                for (int i = 0; i < __result.Count; i++)
                 {
                     var area = __result[i];
                     int id = TryGetFishingAreaId(area);
+                    if (RiverFishAreaIds.Contains(id) && seenIds.Add(id))
+                        uniqueRiverAreas.Add(area);
+                }
+                if (uniqueRiverAreas.Count == 0) return;
+
+                // Strip ALL existing river entries (base + any prior duplicates)
+                for (int i = __result.Count - 1; i >= 0; i--)
+                {
+                    int id = TryGetFishingAreaId(__result[i]);
                     if (RiverFishAreaIds.Contains(id))
-                    {
-                        for (int n = 1; n < multiplier; n++)
-                            __result.Add(area);
-                        riverAreasFound++;
-                    }
+                        __result.RemoveAt(i);
                 }
 
-                if (riverAreasFound > 0)
+                // Re-add exactly multiplier copies of each unique river area
+                foreach (var area in uniqueRiverAreas)
                 {
-                    Log($"Multiplied {riverAreasFound} river fishing-area entry(ies) by {multiplier}× — list now {__result.Count} (was {origCount})");
+                    for (int n = 0; n < multiplier; n++)
+                        __result.Add(area);
                 }
+
+                Log($"River fishing areas: {uniqueRiverAreas.Count} unique × {multiplier} = {uniqueRiverAreas.Count * multiplier} entries (list total: {__result.Count})");
             }
             catch (Exception ex)
             {

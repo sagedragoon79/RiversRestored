@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.5.3 — 2026-05-22
+
+### Fixed
+
+- **River fishing areas compounding on every CreateFishingAreas call** ([Patches/FishingShackPatch.cs](Patches/FishingShackPatch.cs)). The 8× area multiplier re-applied to the already-multiplied list each time a fishing shack called `CreateFishingAreas`, snowballing from 99 → 211 → 1520 entries. Now idempotent: strips all existing river entries, re-adds exactly `unique × multiplier`. Safe to call any number of times.
+- **River fish population not scaling with area multiplier** ([Patches/FishingShackPatch.cs](Patches/FishingShackPatch.cs)). Duplicating FishArea references inflated the displayed area count (1520 / +15,120%) but all duplicates shared the same ~297-fish pool — river shacks starved cycling "no fish available." Now scales `maxFish` and `fishCount` on each river FishArea in `FishingManager.Initialize` postfix (e.g., 297 × 8 = 2376), so the actual fish population matches the intended multiplier.
+
 ## v1.5.2 — 2026-05-21
 
 ### Fixed
