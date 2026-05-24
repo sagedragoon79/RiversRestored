@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.5.4 — 2026-05-22
+
+### Performance
+
+- **Batched WaterArea builder** ([Patches/RiverWaterAreaBuilder.cs](Patches/RiverWaterAreaBuilder.cs)). Replaced per-stamp `AddWaterAreaWithPanguMerge` (hundreds of merge iterations per river, each scanning all waterAreas, allocating masks, recomputing edges) with single-pass `BuildRiverMask` that collects disc cells into one HashSet, then `AddRiverWaterArea` creates one WaterArea per river. Major reduction in allocation churn, GC pressure, and map-gen stutter.
+- **Throttled scene scans** ([Plugin.cs](Plugin.cs), [Patches/RiverCarver.cs](Patches/RiverCarver.cs)). `FindObjectOfType` fallback during loading window now throttled to 0.5s intervals instead of every frame.
+- **Main menu gate** ([Plugin.cs](Plugin.cs)). `OnUpdate` bails immediately on main menu and loading screens (`buildIndex < 2`). Zero per-frame work when no terrain exists.
+
 ## v1.5.3 — 2026-05-22
 
 ### Fixed

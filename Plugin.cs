@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.5.3", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.5.4", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -1160,6 +1160,7 @@ namespace RiversRestored
             _seenGenerator = false;
             _seenTerrain = false;
             _dumpedSaveManager = false;
+            _nextGeneratorScanTime = 0f;
         }
 
         /// <summary>
@@ -1172,15 +1173,27 @@ namespace RiversRestored
         private bool _seenGenerator = false;
         private bool _seenTerrain = false;
         private bool _dumpedSaveManager = false;
+        private float _nextGeneratorScanTime = 0f;
 
         public override void OnUpdate()
         {
             if (!RiversEnabled.Value) return;
             try
             {
-                // Prefer the cached generator from hooks; fall back to scene scan
-                var tg = Patches.RiverSettingsPatch.CachedGenerator
-                         ?? UnityEngine.Object.FindObjectOfType<TerrainGen.TerrainGenerator>();
+                // No terrain on main menu or loading screens — skip entirely.
+                var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+                if (activeScene.buildIndex < 2) return;
+
+                // Prefer the cached generator from hooks; throttle the expensive
+                // scene scan fallback during the loading window.
+                var tg = Patches.RiverSettingsPatch.CachedGenerator;
+                if (tg == null)
+                {
+                    float now = UnityEngine.Time.unscaledTime;
+                    if (now < _nextGeneratorScanTime) return;
+                    _nextGeneratorScanTime = now + 0.5f;
+                    tg = UnityEngine.Object.FindObjectOfType<TerrainGen.TerrainGenerator>();
+                }
                 if (tg != null && !_seenGenerator)
                 {
                     _seenGenerator = true;

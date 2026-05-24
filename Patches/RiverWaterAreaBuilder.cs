@@ -159,13 +159,12 @@ namespace RiversRestored.Patches
                     if (cps == null || cps.Count < 2) continue;
 
                     var hmCps = ConvertReflectiveCpsToCells(cps, hmRes, mapW, mapD);
-                    int riverStamps = StampCellPath(tg, waterAreas, hmCps,
-                        hmRes, blobRadius, blobStride, riverFallbackType);
-                    if (riverStamps > 0)
+                    var built = BuildRiverMask(hmCps, hmRes, blobRadius, blobStride);
+                    if (built != null && AddRiverWaterArea(tg, waterAreas, built, riverFallbackType) >= 0)
                     {
                         riversAdded++;
-                        totalStamps += riverStamps;
-                        Log($"  river[{i}]: {cps.Count} cps → {riverStamps} stamps merged");
+                        totalStamps += built.StampCount;
+                        Log($"  river[{i}]: {cps.Count} cps → {built.StampCount} stamps batched");
                     }
                 }
 
@@ -181,20 +180,25 @@ namespace RiversRestored.Patches
             }
         }
 
-        /// <summary>Walk pre-converted heightmap-cell cps, interpolating
-        /// intermediate stamp positions at <paramref name="stride"/> cell
-        /// spacing. Each position becomes one disc-stamp call to
-        /// <see cref="AddWaterAreaWithPanguMerge"/>. This is the shared
-        /// stamp-loop core used by both gen-time
-        /// (<see cref="BuildAndAddForAllRivers"/>) and reload-time
-        /// (<see cref="BuildAndAddFromSidecar"/>) — they differ only in how
-        /// they extract cps from their input source, then both feed the
-        /// same converted cell list here.</summary>
-        private static int StampCellPath(TerrainGenerator tg, IList waterAreas,
-            List<CellCoord> hmCps, int hmRes, int radius, int stride,
-            UnityEngine.Object riverFallbackType)
+        private sealed class BuiltRiverArea
         {
-            int stamps = 0;
+            public bool[,] Mask = null!;
+            public int MinX, MinZ, MaxX, MaxZ;
+            public int StampCount;
+        }
+
+        /// <summary>Walk pre-converted heightmap-cell cps once, collect unique
+        /// stamped cells, then return a single compact mask for the whole river.
+        /// This avoids rebuilding a boxed WaterArea for every overlapping disc.</summary>
+        private static BuiltRiverArea? BuildRiverMask(List<CellCoord> hmCps,
+            int hmRes, int radius, int stride)
+        {
+            if (hmCps.Count == 0) return null;
+
+            var cells = new HashSet<CellCoord>();
+            var stampCenters = new HashSet<CellCoord>();
+            int minX = int.MaxValue, minZ = int.MaxValue;
+            int maxX = int.MinValue, maxZ = int.MinValue;
             int prevHx = -999, prevHz = -999;
             bool havePrev = false;
 
@@ -215,22 +219,145 @@ namespace RiversRestored.Patches
                         int sx = Mathf.RoundToInt(Mathf.Lerp(prevHx, hx, t));
                         int sz = Mathf.RoundToInt(Mathf.Lerp(prevHz, hz, t));
                         if (sx < 0 || sx >= hmRes || sz < 0 || sz >= hmRes) continue;
-                        if (AddWaterAreaWithPanguMerge(tg, waterAreas,
-                                sx, sz, radius, hmRes, riverFallbackType) >= 0)
-                            stamps++;
+                        StampDiscIntoSet(cells, stampCenters, sx, sz, radius, hmRes,
+                            ref minX, ref minZ, ref maxX, ref maxZ);
                     }
                 }
                 else if (hx >= 0 && hx < hmRes && hz >= 0 && hz < hmRes)
                 {
-                    if (AddWaterAreaWithPanguMerge(tg, waterAreas,
-                            hx, hz, radius, hmRes, riverFallbackType) >= 0)
-                        stamps++;
+                    StampDiscIntoSet(cells, stampCenters, hx, hz, radius, hmRes,
+                        ref minX, ref minZ, ref maxX, ref maxZ);
                 }
 
                 prevHx = hx; prevHz = hz;
                 havePrev = true;
             }
-            return stamps;
+
+            if (cells.Count == 0 || minX > maxX || minZ > maxZ) return null;
+            int w = maxX - minX + 1;
+            int h = maxZ - minZ + 1;
+            var mask = new bool[w, h];
+            foreach (var cell in cells)
+                mask[cell.X - minX, cell.Z - minZ] = true;
+
+            return new BuiltRiverArea
+            {
+                Mask = mask,
+                MinX = minX,
+                MinZ = minZ,
+                MaxX = maxX,
+                MaxZ = maxZ,
+                StampCount = stampCenters.Count
+            };
+        }
+
+        private static void StampDiscIntoSet(HashSet<CellCoord> cells,
+            HashSet<CellCoord> stampCenters, int cx, int cz, int radius, int hmRes,
+            ref int minX, ref int minZ, ref int maxX, ref int maxZ)
+        {
+            var center = new CellCoord(cx, cz);
+            if (!stampCenters.Add(center)) return;
+
+            int r2 = radius * radius;
+            for (int dz = -radius; dz <= radius; dz++)
+            {
+                int z = cz + dz;
+                if (z < 0 || z >= hmRes) continue;
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    if (dx * dx + dz * dz > r2) continue;
+                    int x = cx + dx;
+                    if (x < 0 || x >= hmRes) continue;
+                    cells.Add(new CellCoord(x, z));
+                    if (x < minX) minX = x;
+                    if (z < minZ) minZ = z;
+                    if (x > maxX) maxX = x;
+                    if (z > maxZ) maxZ = z;
+                }
+            }
+        }
+
+        private static int AddRiverWaterArea(TerrainGenerator tg, IList waterAreas,
+            BuiltRiverArea built, UnityEngine.Object riverFallbackType)
+        {
+            try
+            {
+                const int padding = 1;
+                var mergeIndices = new HashSet<int>();
+                int uMinX = built.MinX, uMinZ = built.MinZ;
+                int uMaxX = built.MaxX, uMaxZ = built.MaxZ;
+
+                for (int i = 0; i < waterAreas.Count; i++)
+                {
+                    var entry = waterAreas[i];
+                    if (entry == null) continue;
+                    int eMinX = (int)_faMinX!.GetValue(entry);
+                    int eMinZ = (int)_faMinZ!.GetValue(entry);
+                    int eMaxX = (int)_faMaxX!.GetValue(entry);
+                    int eMaxZ = (int)_faMaxZ!.GetValue(entry);
+                    if (eMinX > built.MaxX + padding || eMaxX < built.MinX - padding ||
+                        eMinZ > built.MaxZ + padding || eMaxZ < built.MinZ - padding)
+                        continue;
+
+                    if (!RiverWaterAreaBounds.Contains(new WaterAreaBoundsKey(eMinX, eMinZ, eMaxX, eMaxZ)))
+                        continue;
+
+                    var ePts = _faPoints!.GetValue(entry) as bool[,];
+                    if (ePts == null) continue;
+                    if (!MasksTouch(built.Mask, built.MinX, built.MinZ, built.MaxX, built.MaxZ,
+                            ePts, eMinX, eMinZ, eMaxX, eMaxZ, padding))
+                        continue;
+
+                    mergeIndices.Add(i);
+                    uMinX = Math.Min(uMinX, eMinX);
+                    uMinZ = Math.Min(uMinZ, eMinZ);
+                    uMaxX = Math.Max(uMaxX, eMaxX);
+                    uMaxZ = Math.Max(uMaxZ, eMaxZ);
+                }
+
+                int gw = uMaxX - uMinX + 1;
+                int gh = uMaxZ - uMinZ + 1;
+                bool[,] union = new bool[gw, gh];
+                CopyMaskIntoUnion(built.Mask, built.MinX, built.MinZ, uMinX, uMinZ, union);
+
+                foreach (int idx in mergeIndices)
+                {
+                    var entry = waterAreas[idx];
+                    if (entry == null) continue;
+                    int eMinX = (int)_faMinX!.GetValue(entry);
+                    int eMinZ = (int)_faMinZ!.GetValue(entry);
+                    var pts = _faPoints!.GetValue(entry) as bool[,];
+                    if (pts != null) CopyMaskIntoUnion(pts, eMinX, eMinZ, uMinX, uMinZ, union);
+                }
+
+                if (mergeIndices.Count > 0)
+                {
+                    foreach (int idx in mergeIndices)
+                    {
+                        var entry = waterAreas[idx];
+                        if (entry == null) continue;
+                        int eMinX = (int)_faMinX!.GetValue(entry);
+                        int eMinZ = (int)_faMinZ!.GetValue(entry);
+                        int eMaxX = (int)_faMaxX!.GetValue(entry);
+                        int eMaxZ = (int)_faMaxZ!.GetValue(entry);
+                        RiverWaterAreaBounds.Remove(new WaterAreaBoundsKey(eMinX, eMinZ, eMaxX, eMaxZ));
+                    }
+                    var sorted = new List<int>(mergeIndices);
+                    sorted.Sort();
+                    for (int k = sorted.Count - 1; k >= 0; k--)
+                        waterAreas.RemoveAt(sorted[k]);
+                }
+
+                object area = CreateWaterArea(union, uMinX, uMinZ, uMaxX, uMaxZ, riverFallbackType);
+                waterAreas.Add(area);
+                RiverWaterAreaBounds.Add(new WaterAreaBoundsKey(uMinX, uMinZ, uMaxX, uMaxZ));
+                return waterAreas.Count - 1;
+            }
+            catch (Exception ex)
+            {
+                Log($"AddRiverWaterArea exception: {ex.Message}");
+                return -1;
+            }
         }
 
         /// <summary>Convert reflective cps (FF's TerrainRiver.points) to
@@ -761,13 +888,12 @@ namespace RiversRestored.Patches
                     if (rd == null || rd.Points.Count < 2) continue;
 
                     var hmCps = ConvertPointDataToCells(rd.Points, hmRes, mapW, mapD);
-                    int stamps = StampCellPath(tg, waterAreas, hmCps,
-                        hmRes, blobRadius, blobStride, riverFallbackType);
-                    if (stamps > 0)
+                    var built = BuildRiverMask(hmCps, hmRes, blobRadius, blobStride);
+                    if (built != null && AddRiverWaterArea(tg, waterAreas, built, riverFallbackType) >= 0)
                     {
                         riversAdded++;
-                        totalStamps += stamps;
-                        Log($"  sidecar river[{i}]: {rd.Points.Count} cps → {stamps} stamps merged");
+                        totalStamps += built.StampCount;
+                        Log($"  sidecar river[{i}]: {rd.Points.Count} cps → {built.StampCount} stamps batched");
                     }
                 }
 
@@ -881,6 +1007,108 @@ namespace RiversRestored.Patches
             if (z0 < minZ) minZ = z0;
             if (x1 > maxX) maxX = x1;
             if (z1 > maxZ) maxZ = z1;
+        }
+
+        private static void CopyMaskIntoUnion(bool[,] source, int sourceMinX, int sourceMinZ,
+            int unionMinX, int unionMinZ, bool[,] union)
+        {
+            int sw = source.GetLength(0), sh = source.GetLength(1);
+            int uw = union.GetLength(0), uh = union.GetLength(1);
+            for (int z = 0; z < sh; z++)
+            {
+                int uz = sourceMinZ + z - unionMinZ;
+                if (uz < 0 || uz >= uh) continue;
+                for (int x = 0; x < sw; x++)
+                {
+                    if (!source[x, z]) continue;
+                    int ux = sourceMinX + x - unionMinX;
+                    if (ux >= 0 && ux < uw) union[ux, uz] = true;
+                }
+            }
+        }
+
+        private static bool MasksTouch(bool[,] a, int aMinX, int aMinZ, int aMaxX, int aMaxZ,
+            bool[,] b, int bMinX, int bMinZ, int bMaxX, int bMaxZ, int padding)
+        {
+            if (aMinX > bMaxX + padding || aMaxX < bMinX - padding ||
+                aMinZ > bMaxZ + padding || aMaxZ < bMinZ - padding)
+                return false;
+
+            int x0 = Math.Max(aMinX, bMinX - padding);
+            int x1 = Math.Min(aMaxX, bMaxX + padding);
+            int z0 = Math.Max(aMinZ, bMinZ - padding);
+            int z1 = Math.Min(aMaxZ, bMaxZ + padding);
+            int bw = b.GetLength(0), bh = b.GetLength(1);
+            for (int z = z0; z <= z1; z++)
+            {
+                int az = z - aMinZ;
+                for (int x = x0; x <= x1; x++)
+                {
+                    int ax = x - aMinX;
+                    if (!a[ax, az]) continue;
+                    for (int dz = -padding; dz <= padding; dz++)
+                    {
+                        int bz = z + dz - bMinZ;
+                        if (bz < 0 || bz >= bh) continue;
+                        for (int dx = -padding; dx <= padding; dx++)
+                        {
+                            int bx = x + dx - bMinX;
+                            if (bx >= 0 && bx < bw && b[bx, bz]) return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static object CreateWaterArea(bool[,] mask, int minX, int minZ, int maxX, int maxZ,
+            UnityEngine.Object waterType)
+        {
+            var edges = new List<object>();
+            var shores = new List<object>();
+            for (int m = minZ; m <= maxZ; m++)
+            {
+                for (int n = minX; n <= maxX; n++)
+                {
+                    int gx = n - minX, gz = m - minZ;
+                    if (!mask[gx, gz]) continue;
+                    bool n_w = IsMaskFilled(mask, minX, minZ, maxX, maxZ, n - 1, m);
+                    bool n_e = IsMaskFilled(mask, minX, minZ, maxX, maxZ, n + 1, m);
+                    bool n_s = IsMaskFilled(mask, minX, minZ, maxX, maxZ, n, m - 1);
+                    bool n_n = IsMaskFilled(mask, minX, minZ, maxX, maxZ, n, m + 1);
+                    if (n_w && n_e && n_s && n_n) continue;
+
+                    int nx = 0, nz = 0;
+                    if (!n_w) nx--;
+                    if (!n_e) nx++;
+                    if (!n_s) nz--;
+                    if (!n_n) nz++;
+                    if (nx == 0 && nz == 0) nz = 1;
+                    var edge = Activator.CreateInstance(_waterEdgeType!)!;
+                    _feX!.SetValue(edge, n);
+                    _feZ!.SetValue(edge, m);
+                    _feNx!.SetValue(edge, nx);
+                    _feNz!.SetValue(edge, nz);
+                    edges.Add(edge);
+                    shores.Add(_pairCtor!.Invoke(new object[] { n, m }));
+                }
+            }
+
+            var edgesArr = Array.CreateInstance(_waterEdgeType!, edges.Count);
+            for (int i = 0; i < edges.Count; i++) edgesArr.SetValue(edges[i], i);
+            var shoresArr = Array.CreateInstance(_pairIntIntType!, shores.Count);
+            for (int i = 0; i < shores.Count; i++) shoresArr.SetValue(shores[i], i);
+
+            object area = Activator.CreateInstance(_waterAreaType!)!;
+            _faWaterType!.SetValue(area, waterType);
+            _faPoints!.SetValue(area, mask);
+            _faEdge!.SetValue(area, edgesArr);
+            _faShore!.SetValue(area, shoresArr);
+            _faMinX!.SetValue(area, minX);
+            _faMinZ!.SetValue(area, minZ);
+            _faMaxX!.SetValue(area, maxX);
+            _faMaxZ!.SetValue(area, maxZ);
+            return area;
         }
 
         // ── Reflection setup ────────────────────────────────────────────────

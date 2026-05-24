@@ -46,6 +46,7 @@ namespace RiversRestored.Patches
         private static Type? _cachedTerrain2Type;
         private static UnityEngine.Object? _cachedTerrainManagerInstance;
         private static UnityEngine.Object? _cachedTerrain2Instance;
+        private static float _nextTerrainApiScanTime = 0f;
 
         public static void ResetGuard()
         {
@@ -58,6 +59,7 @@ namespace RiversRestored.Patches
             // terrain instances even though the Type lookups stay valid.
             _cachedTerrainManagerInstance = null;
             _cachedTerrain2Instance = null;
+            _nextTerrainApiScanTime = 0f;
         }
 
         /// <summary>
@@ -330,10 +332,17 @@ namespace RiversRestored.Patches
                     return;
                 }
 
-                if (_cachedTerrainManagerInstance == null)
-                    _cachedTerrainManagerInstance = UnityEngine.Object.FindObjectOfType(_cachedTerrainManagerType);
-                if (_cachedTerrain2Instance == null)
-                    _cachedTerrain2Instance = UnityEngine.Object.FindObjectOfType(_cachedTerrain2Type);
+                if (_cachedTerrainManagerInstance == null || _cachedTerrain2Instance == null)
+                {
+                    float now = UnityEngine.Time.unscaledTime;
+                    if (now < _nextTerrainApiScanTime) return;
+                    _nextTerrainApiScanTime = now + 0.5f;
+
+                    if (_cachedTerrainManagerInstance == null)
+                        _cachedTerrainManagerInstance = UnityEngine.Object.FindObjectOfType(_cachedTerrainManagerType);
+                    if (_cachedTerrain2Instance == null)
+                        _cachedTerrain2Instance = UnityEngine.Object.FindObjectOfType(_cachedTerrain2Type);
+                }
 
                 var tm = _cachedTerrainManagerInstance;
                 var t2 = _cachedTerrain2Instance;
