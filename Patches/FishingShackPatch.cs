@@ -456,19 +456,43 @@ namespace RiversRestored.Patches
                 if (multiplier <= 1 || __result == null || __result.Count == 0) return;
                 if (RiverFishAreaIds.Count == 0) return;
 
-                // Collect unique river areas
+                // Collect DISTINCT river FishingArea objects by REFERENCE
+                // identity — NOT by water-area id.
+                //
+                // Vanilla CreateFishingAreas creates one FishingArea (each with
+                // its OWN marker GameObject) per shore point, and many shore
+                // points on a single river share the same water-area id. The
+                // old code deduped by id, kept one FishingArea, then stripped
+                // the rest from the tracked list with RemoveAt() WITHOUT
+                // destroying their markers. Those dropped markers became
+                // orphans the shack no longer tracked, so neither
+                // ClearFishingAreas nor SetFishingAreasVisibility could ever
+                // reclaim/hide them — every work-area rebuild leaked another
+                // batch of stuck-visible markers ("FISHING AREA" debug cubes
+                // piling up along the shore).
+                //
+                // Reference dedup preserves every real marker (all are re-added
+                // below) while still collapsing RR's OWN re-added duplicates
+                // (which are reference-equal to an original), keeping this
+                // postfix idempotent if it ever runs on an already-multiplied
+                // list.
                 var uniqueRiverAreas = new System.Collections.Generic.List<object>();
-                var seenIds = new HashSet<int>();
                 for (int i = 0; i < __result.Count; i++)
                 {
                     var area = __result[i];
                     int id = TryGetFishingAreaId(area);
-                    if (RiverFishAreaIds.Contains(id) && seenIds.Add(id))
-                        uniqueRiverAreas.Add(area);
+                    if (!RiverFishAreaIds.Contains(id)) continue;
+
+                    bool already = false;
+                    foreach (var u in uniqueRiverAreas)
+                        if (ReferenceEquals(u, area)) { already = true; break; }
+                    if (!already) uniqueRiverAreas.Add(area);
                 }
                 if (uniqueRiverAreas.Count == 0) return;
 
-                // Strip ALL existing river entries (base + any prior duplicates)
+                // Strip ALL existing river entries (base + any prior duplicates).
+                // Safe: every DISTINCT marker is captured in uniqueRiverAreas
+                // above and re-added below, so RemoveAt here orphans nothing.
                 for (int i = __result.Count - 1; i >= 0; i--)
                 {
                     int id = TryGetFishingAreaId(__result[i]);
