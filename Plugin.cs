@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.5.5", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.5.6", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -1180,12 +1180,22 @@ namespace RiversRestored
             if (!RiversEnabled.Value) return;
             try
             {
-                // No terrain on main menu or loading screens — skip entirely.
-                var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
-                if (activeScene.buildIndex < 2) return;
+                // ── Cheap, self-guarding diagnostics — run regardless of scene ──
+                // Both are VerboseDiagnostics-gated and no-op until needed
+                // (biome dump latches after one write; probe only acts on its
+                // hotkey chord and null-checks GameManager/terrain itself).
+                if (VerboseDiagnostics?.Value ?? false)
+                {
+                    Patches.BiomeStatsDumper.TryDump();
+                    Patches.PathToTownProbe.CheckHotkey();
+                }
 
-                // Prefer the cached generator from hooks; throttle the expensive
-                // scene scan fallback during the loading window.
+                // Prefer the cached generator from hooks. When it's null we may
+                // be on the main menu OR mid-load; the 0.5s throttle keeps the
+                // FindObjectOfType fallback cheap in both cases. (A prior
+                // buildIndex<2 gate here wrongly returned during gameplay — the
+                // active scene is 'Frontier' (idx 1), not the additively-loaded
+                // 'Map' (idx 2) — so OnUpdate never ran in-game. Throttle only.)
                 var tg = Patches.RiverSettingsPatch.CachedGenerator;
                 if (tg == null)
                 {

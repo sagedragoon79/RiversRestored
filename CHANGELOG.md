@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.6 — 2026-06-19
+
+### Fixed
+
+- **`OnUpdate` never ran during gameplay** ([Plugin.cs](Plugin.cs)). The v1.5.4 "main menu gate" used `SceneManager.GetActiveScene().buildIndex < 2` to skip menu/loading frames — but the active gameplay scene is `Frontier` (buildIndex 1); the terrain `Map` scene (buildIndex 2) is loaded *additively* and isn't the active scene. So the gate returned out of `OnUpdate` for the entire session in-game. Impact was masked because save-load river restore runs from the `BuildTerrainShared03` Harmony postfix (which resolves the save name itself), not `OnUpdate`. Removed the broken buildIndex gate; the existing 0.5s throttle on the `FindObjectOfType` fallback already addresses the perf concern it was meant to solve.
+
+### Added (diagnostics — `VerboseDiagnostics`-gated, off by default)
+
+- **Biome stats dumper** ([Patches/BiomeStatsDumper.cs](Patches/BiomeStatsDumper.cs)). One-shot dump of every map type's themes, mountain/water ranges, and per-biome resource percentages / mineral-site curves / foragables to `UserData/RiversRestored/biome_stats.txt`.
+- **Path-to-town debug probe** ([Patches/PathToTownProbe.cs](Patches/PathToTownProbe.cs)). **Ctrl+Shift+F9** logs, for the tile under the cursor, whether a flood-fill path to town exists for both gates that an RR river can break: `BridgesOnly` (deer/wildlife spawn eligibility) and `WallsBlock` (hunter trap placement). The authoritative river-connectivity check — villager foot traffic is NOT a reliable proxy (movement is Unity NavMesh, a separate system from the spawn/trap flood-fill gates). See `FF-Modding-Knowledge/game-systems/river-system.md`.
+
+## v1.5.5 — 2026-05-22
+
+### Fixed
+
+- **Fishing-area markers leaking into the scene** ([Patches/FishingShackPatch.cs](Patches/FishingShackPatch.cs)). `CreateFishingAreasPostfix` deduped river fishing areas by water-area id, dropping entries via `RemoveAt` without destroying their marker GameObjects — orphaned markers piled up and stayed visible with no shack selected. Now deduplicates by object reference: every distinct vanilla marker is preserved, while RR's own reference-equal duplicates still collapse. Postfix stays idempotent.
+
 ## v1.5.4 — 2026-05-22
 
 ### Performance
