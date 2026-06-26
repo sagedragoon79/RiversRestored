@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.6.0 — 2026-06-26
+
+### Added
+
+- **River fish pool sized by actual river size** ([Patches/FishingShackPatch.cs](Patches/FishingShackPatch.cs), new pref **River Fish Per Water Cell**). Since v1.5.4 batched each river into one merged polygon, FF's area→maxFish curve saturated and a huge map-bisecting river held the same capped fish as a pond. River fish are now sized by the river's actual filled water-cell count (`cells × RiverFishPerCell`, default 1.0 ≈ one fish per water cell). A large bisecting river now holds ~10k fish without a giant multiplier crutch.
+- **Lake/pond fish sized by area too** (new pref **Size Lake/Pond Fish By Area Too**, `ScaleLakeFish`, default ON). Applies the same per-water-cell ratio to lakes and ponds, so a big lake holds proportionally more fish than a small pond instead of being capped by FF's saturating curve. Boost-only — never drops a water body below its vanilla count; the river productivity multiplier is not applied to lakes. Turn OFF to keep vanilla lake/pond counts.
+- **Rivers Don't Block Wildlife Spawning** (new pref `RiversDontBlockWildlife`, default OFF) ([Patches/WildlifeRiverPatch.cs](Patches/WildlifeRiverPatch.cs)). When ON, deer/herd wildlife may spawn on the far side of a river instead of being walled off by FF's path-to-town flood-fill gate. Scoped to the wildlife spawn-validity check only — villager pathing, building placement, and hunter trapping still see real reachability. Fresh gens seed deer across the river immediately; existing saves get their cut-off spawn areas recomputed and flagged in-use so deer repopulate over time.
+- **Map-preview timeout message** ([Patches/PreviewGenWorker.cs](Patches/PreviewGenWorker.cs), [Patches/PreviewOverlay.cs](Patches/PreviewOverlay.cs)). On slow/Proton gens where the preview render stalls, the overlay now shows "Map Preview Timed Out — You can still start the game though!" instead of an indefinite spinner.
+
+### Fixed
+
+- **River fish count not surviving save/reload** ([Patches/FishingShackPatch.cs](Patches/FishingShackPatch.cs)). The fishing shack's info panel reads the river's `isRiver` FishArea, and `FishingManager.Load` replaces the whole `fishAreas` dictionary with the saved objects *after* `Initialize` — discarding any scaling done at Initialize. River (and lake) fish are now also re-scaled in a `FishingManager.Load` postfix so the correct size persists on reloaded saves, and the scaling overwrites unconditionally so both vanilla-low and any stale-high values from older builds are corrected. Lakes/rivers are matched to their cell counts by persistent `waterAreaId` (robust across reload) with a world-bbox fallback.
+
+### Changed (diagnostics)
+
+- The fishing-panel `[Panel]` auto-dump and the **F10** fishing-state dump are now gated behind **`VerboseDiagnostics`** (off by default), matching the biome dumper and F9 path-to-town probe.
+
 ## v1.5.6 — 2026-06-19
 
 ### Fixed

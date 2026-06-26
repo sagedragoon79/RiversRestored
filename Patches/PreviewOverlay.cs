@@ -250,6 +250,12 @@ namespace RiversRestored.Patches
             bool captionReady = PreviewGenWorker.CaptionReady;
             bool showContent = captionReady && LatestPreview != null;
 
+            // Hard-timeout fallback: the inner gen blew the timeout before
+            // producing a render (common on slow/Proton setups). Instead of
+            // spinning forever, swap the progress bar for a plain message —
+            // the New Game screen is still fully usable.
+            bool timedOut = PreviewGenWorker.PreviewTimedOut && !showContent;
+
             // Rebind texture if it changed (renderer hands us a new
             // Texture2D after each gen). Hide the image entirely until
             // showContent is true, so we don't flash a half-rendered
@@ -270,8 +276,9 @@ namespace RiversRestored.Patches
                 }
             }
 
-            // Drive the progress bar.
-            UpdateProgressBar(showContent);
+            // Drive the progress bar. Suppress it on timeout (the message
+            // takes its place — passing showContent||timedOut sets wantBar false).
+            UpdateProgressBar(showContent || timedOut);
 
             // Caption refresh: split-column display when preview exists,
             // single centered hint when empty. Toggle the COMPONENT's
@@ -284,8 +291,22 @@ namespace RiversRestored.Patches
             // is no longer used for "Generating preview…" — the
             // progress bar handles that. Disable all caption TMPs
             // when content isn't ready.
+            // Legacy single TMP is reused for the timeout message (centered).
             if (_captionText != null)
-                _captionText.enabled = false;
+            {
+                if (timedOut)
+                {
+                    _captionText.enableWordWrapping = true;
+                    const string msg = "Map Preview Timed Out — You can still start the game though!";
+                    if (_captionText.text != msg) _captionText.text = msg;
+                    _captionText.enabled = true;
+                }
+                else
+                {
+                    _captionText.enabled = false;
+                }
+            }
+            // Hide the split captions while showing the timeout message.
             if (_captionLeftText != null)
                 _captionLeftText.enabled = showContent;
             if (_captionMidText != null)

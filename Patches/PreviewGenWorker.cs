@@ -63,6 +63,13 @@ namespace RiversRestored.Patches
         // doesn't inject into the gen pipeline; RR does.
         public static bool IsPreviewActive { get; private set; } = false;
 
+        /// <summary>True when the inner terrain gen hard-timed out before
+        /// producing a preview render (common on slow/Proton setups). The
+        /// overlay reads this to swap its spinner for a "timed out — you can
+        /// still start" message instead of spinning forever. Reset at each
+        /// preview start; set in the hard-timeout branch.</summary>
+        public static bool PreviewTimedOut { get; private set; } = false;
+
         // Worker TG ref + stage field, exposed for the overlay's
         // progress bar. Set when PreviewCoroutine acquires a worker;
         // cleared by HardCancel + on graceful gen end. The stage field
@@ -430,6 +437,7 @@ namespace RiversRestored.Patches
                 {
                     float timeout = PanguTimeoutFor(mapSizeIdx);
                     IsPreviewActive = true;
+                    PreviewTimedOut = false;   // fresh attempt — clear any prior timeout state
                     bool genCompletedGracefully = false;
                     bool captionFired = false;
                     try
@@ -509,9 +517,15 @@ namespace RiversRestored.Patches
                             float elapsed = Time.realtimeSinceStartup - waitStart;
                             if (elapsed > timeout)
                             {
+                                // Flag the timeout so the overlay shows a
+                                // "timed out — you can still start" message
+                                // instead of spinning forever (slow/Proton
+                                // gens routinely blow the ceiling). IsPreviewActive
+                                // stays set so RR's stage hooks keep gating.
+                                PreviewTimedOut = true;
                                 Log($"Inner gen wait HARD-timed out at {elapsed:0.0}s (tg.generating still {stillGenerating}). " +
                                     "Leaving IsPreviewActive set — gen is still mutating the worker, RR patches must keep gating. " +
-                                    "Flag will clear on next preview start or HardCancel.");
+                                    "Overlay will show timeout message; flag clears on next preview start or HardCancel.");
                                 break;
                             }
                             yield return null;

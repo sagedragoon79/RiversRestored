@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.5.6", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.6.0", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -203,6 +203,35 @@ namespace RiversRestored
         /// results. Pangu uses the same pattern for lakes. 1 = no boost
         /// (vanilla, fishing rivers feels weak); 4 = nice playable density.</summary>
         public static MelonPreferences_Entry<int> RiverFishingAreaMultiplier { get; private set; } = null!;
+
+        /// <summary>Base fish-pool size per filled water cell of a river polygon.
+        /// Since v1.5.4 batched each river into ONE merged polygon, FF's
+        /// area→maxFish curve saturates and a huge map-bisecting river gets the
+        /// same capped maxFish as a pond — so rivers held far fewer fish and
+        /// needed a giant FishingAreaMultiplier crutch. This sizes the river's
+        /// base maxFish by its actual filled-cell count instead: maxFish =
+        /// max(vanillaCurve, filledCells × this), then × FishingAreaMultiplier.
+        /// Calibrated from real saves: a large bisecting river is ~10–14k filled
+        /// cells, so 1.0 ≈ 10–14k fish at multiplier ×1 (matches hand-tuning).
+        /// 0 = disable (revert to vanilla-curve base).</summary>
+        public static MelonPreferences_Entry<float> RiverFishPerCell { get; private set; } = null!;
+
+        /// <summary>When ON, lakes/ponds are sized by the SAME per-water-cell ratio
+        /// as rivers (<see cref="RiverFishPerCell"/>) instead of FF's saturating area
+        /// curve — so a big lake holds proportionally more fish than a small pond,
+        /// matching rivers. Boost-only: never drops a water body below its vanilla
+        /// fish count (the river productivity multiplier is NOT applied to lakes).
+        /// ON by default. See <see cref="Patches.FishingShackPatch"/>.</summary>
+        public static MelonPreferences_Entry<bool> ScaleLakeFish { get; private set; } = null!;
+
+        /// <summary>When ON, deer / herd wildlife may spawn across an RR river
+        /// instead of being walled off by FF's path-to-town gate. Bypasses ONLY
+        /// the wildlife spawn-validity check (not trapping, not villager pathing).
+        /// Fixes deer on fresh gens; for existing saves it also recomputes the
+        /// cut-off region's spawn points + flags them inUse so deer repopulate.
+        /// OFF by default (vanilla: rivers block cross-river wildlife). See
+        /// <see cref="Patches.WildlifeRiverPatch"/>.</summary>
+        public static MelonPreferences_Entry<bool> RiversDontBlockWildlife { get; private set; } = null!;
 
         // ── Carve shape ─────────────────────────────────────────────────────
         /// <summary>Inner radius (heightmap cells) of the river trench.
@@ -947,6 +976,35 @@ namespace RiversRestored
                              "8+ = lush fishing economy. " +
                              "Lakes and ocean fishing are unaffected.");
 
+            RiversDontBlockWildlife = cat.CreateEntry("RiversDontBlockWildlife", false,
+                display_name: "Rivers Don't Block Wildlife Spawning",
+                description: "When ON, deer and other wildlife can spawn on the far side of a " +
+                             "river instead of being blocked because the area has no land path " +
+                             "to your town. Fixes 'no deer across the river' on new maps; on an " +
+                             "existing save it also re-seeds cut-off regions on load. Only affects " +
+                             "wildlife spawning — hunter trapping and villager pathing are unchanged. " +
+                             "OFF = vanilla behaviour (rivers block cross-river wildlife).");
+
+            RiverFishPerCell = cat.CreateEntry("RiverFishPerCell", 1.0f,
+                display_name: "River Fish Per Water Cell",
+                description: "Sizes a river's base fish pool by how big the river actually is " +
+                             "(its filled water-cell count), instead of FF's area curve which " +
+                             "caps out — so a huge map-spanning river holds proportionally more " +
+                             "fish than a small stream without manual tuning. " +
+                             "1.0 = ~10-14k fish for a large map-bisecting river (recommended). " +
+                             "Raise for richer rivers, lower for leaner. 0 = disable (use vanilla " +
+                             "curve). The River Fishing Productivity Boost multiplier still applies " +
+                             "on top of this base.");
+
+            ScaleLakeFish = cat.CreateEntry("ScaleLakeFish", true,
+                display_name: "Size Lake/Pond Fish By Area Too",
+                description: "Applies the same 'fish per water cell' sizing (above) to lakes and " +
+                             "ponds, not just rivers — so a large lake holds proportionally more " +
+                             "fish than a small pond instead of FF's curve that caps big water " +
+                             "bodies. Boost-only: a water body never ends up with fewer fish than " +
+                             "vanilla (the river productivity multiplier is not applied to lakes). " +
+                             "ON by default. Turn OFF to keep vanilla lake/pond fish counts.");
+
             VerboseDiagnostics = cat.CreateEntry("VerboseDiagnostics", false,
                 display_name: "Verbose Diagnostic Logging",
                 description: "When ON, the mod writes detailed per-WaterArea state " +
@@ -998,6 +1056,7 @@ namespace RiversRestored
                 Patches.RiverSettingsPatch.Apply(HarmonyInstance);
                 Patches.RiverPersistence.Apply(HarmonyInstance);
                 Patches.FishingShackPatch.Apply(HarmonyInstance);
+                Patches.WildlifeRiverPatch.Apply(HarmonyInstance);
                 Patches.WaterValueOverridePatch.Apply(HarmonyInstance);
                 // Pangu-pattern: prefix on StartSceneManager.StartNewGame
                 // so we tear down the preview worker BEFORE FF begins
@@ -1150,6 +1209,7 @@ namespace RiversRestored
             Patches.RiverPersistence.ResetForSceneLoad();
             Patches.FishingShackPatch.ResetForSceneLoad();
             Patches.RiverWaterAreaBuilder.ResetForSceneLoad();
+            Patches.WildlifeRiverPatch.ResetForSceneLoad();
             // Reset the carver's _carved latch too. RiverSettingsPatch.DoOverride
             // resets it on a settings-delta path, but if a player goes
             // (new map → new map) without changing RiverSettings, the
@@ -1180,6 +1240,9 @@ namespace RiversRestored
             if (!RiversEnabled.Value) return;
             try
             {
+                // ── DIAGNOSTIC: F10 dumps the fishing-shack panel "Fish Count" truth ──
+                Patches.FishingShackPatch.CheckDiagnosticHotkey();
+
                 // ── Cheap, self-guarding diagnostics — run regardless of scene ──
                 // Both are VerboseDiagnostics-gated and no-op until needed
                 // (biome dump latches after one write; probe only acts on its
@@ -1211,6 +1274,12 @@ namespace RiversRestored
                 }
 
                 if (tg == null) return;
+
+                // Wildlife-across-rivers repair (toggle-gated, one-shot per
+                // scene). Self-guards: returns immediately if the toggle is off
+                // or already done; retries until AnimalManager's spawn grid is
+                // populated. Re-seeds cut-off regions on existing saves.
+                Patches.WildlifeRiverPatch.TryRepairLoadedSpawnAreas();
 
                 // ── Save-load river restoration ─────────────────────────────
                 // The actual respawn is now driven by our Terrain2Builder
