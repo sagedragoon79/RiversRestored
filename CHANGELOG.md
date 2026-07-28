@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.6.1 — 2026-06-27
+
+### Fixed
+
+- **Deer flooding the entire map with `RiversDontBlockWildlife` ON** ([Patches/WildlifeRiverPatch.cs](Patches/WildlifeRiverPatch.cs)). A uniform grid of deer spawn clusters appeared across the whole map mid-session. Two causes, both fixed:
+  - **The runtime bypass was too broad.** It approved *every* spawn point while the deer spawn-validity check ran. It now probes the path check with `FloodFillType.IgnoreBuildings` and only bypasses points that are **water-isolated** (cut off by an RR river) — points that are merely **building-blocked** (inside town/walls) are left invalid, as vanilla intends.
+  - **The load-time repair flagged the whole spawn grid `inUse`.** `TryRepairLoadedSpawnAreas` set `inUse=true` on all ~1600 areas before the empty-check, so FF's daily respawn seeded deer into every cell. It now recomputes an empty area's spawn points first and only activates the area if the recompute actually produces points (i.e. it was river-isolated) — town-covered areas stay dormant. The feature still repopulates genuinely cut-off regions.
+
+> Note: this only prevents *new* over-flagging. A save made during the buggy run may already have areas flagged `inUse`; reload a pre-bug save or a fresh map to verify a clean result.
+
 ## v1.6.0 — 2026-06-26
 
 ### Added

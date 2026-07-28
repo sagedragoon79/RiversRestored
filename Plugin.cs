@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.6.0", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.6.1", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored

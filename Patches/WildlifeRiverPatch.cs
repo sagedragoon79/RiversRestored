@@ -44,10 +44,16 @@ namespace RiversRestored.Patches
         private static bool _inSpawnValidity = false;
         private static bool _repairedThisScene = false;
 
+        // Re-entrancy guard + handles for the IgnoreBuildings probe (see DoesPathPostfix).
+        private static bool _inProbe = false;
+        private static MethodInfo? _doesPathMI;
+        private static Type? _floodFillType;
+
         public static void ResetForSceneLoad()
         {
             _inSpawnValidity = false;
             _repairedThisScene = false;
+            _inProbe = false;
         }
 
         public static void Apply(HarmonyLib.Harmony harmony)
@@ -80,14 +86,17 @@ namespace RiversRestored.Patches
                     return;
                 }
 
-                // Bypass the path-to-town result while the flag is set.
+                // Bypass the path-to-town result while the flag is set — but only for points that are
+                // cut off by WATER, not by buildings (see DoesPathPostfix for the discrimination).
                 MethodInfo? doesPath = AccessTools.Method(pfType, "DoesGeneralPathExistToTown",
                     new[] { typeof(Vector3), ffType, typeof(bool) });
                 if (doesPath != null)
                 {
+                    _doesPathMI = doesPath;
+                    _floodFillType = ffType;
                     harmony.Patch(doesPath,
-                        prefix: new HarmonyMethod(typeof(WildlifeRiverPatch)
-                            .GetMethod(nameof(DoesPathPrefix), BindingFlags.Static | BindingFlags.NonPublic)));
+                        postfix: new HarmonyMethod(typeof(WildlifeRiverPatch)
+                            .GetMethod(nameof(DoesPathPostfix), BindingFlags.Static | BindingFlags.NonPublic)));
                     Log("Hooked AnimalSpawnArea.IsValidForSpawnOrWanderPoint + AIPathfinder.DoesGeneralPathExistToTown (wildlife river bypass; gated by RiversDontBlockWildlife).");
                 }
                 else
@@ -114,14 +123,30 @@ namespace RiversRestored.Patches
             _inSpawnValidity = false;
         }
 
-        private static bool DoesPathPrefix(ref bool __result)
+        /// <summary>Runs AFTER the real path check, only inside the deer spawn gate, and only when the
+        /// real answer was "unreachable". WHY it's unreachable matters:
+        ///   • fails even with FloodFillType.IgnoreBuildings → water (an RR river) isolates it → the
+        ///     exact case this feature exists for → bypass to true;
+        ///   • passes when buildings are ignored → the point was only building-blocked (it's inside
+        ///     town / a walled compound) → LEAVE invalid, or the repair pass revalidates every
+        ///     town-covered point and the daily respawn restocks deer inside the walls.
+        /// Cheap: flood fills are cached per type, so the probe is a grid lookup, and it only runs on
+        /// the already-rare "failed while spawn-validating" path. _inProbe guards our own re-entry.</summary>
+        private static void DoesPathPostfix(object __instance, Vector3 __0, bool __2, ref bool __result)
         {
-            if (_inSpawnValidity && (RiversRestoredMod.RiversDontBlockWildlife?.Value ?? false))
+            if (__result || _inProbe) return;
+            if (!_inSpawnValidity || !(RiversRestoredMod.RiversDontBlockWildlife?.Value ?? false)) return;
+            try
             {
-                __result = true;   // pretend the spawn point is reachable from town
-                return false;      // skip the real flood-fill check
+                _inProbe = true;
+                object ignoreBuildings = Enum.ToObject(_floodFillType!, 0);   // FloodFillType.IgnoreBuildings
+                bool reachableIgnoringBuildings = (bool)_doesPathMI!.Invoke(
+                    __instance, new object[] { __0, ignoreBuildings, __2 });
+                if (!reachableIgnoringBuildings)
+                    __result = true;   // water-isolated, not building-blocked → deer may live here
             }
-            return true;           // everything else: real reachability
+            catch { /* on any failure keep the real (vanilla) answer */ }
+            finally { _inProbe = false; }
         }
 
         /// <summary>One-shot per scene (toggle-gated): on an existing save the
@@ -157,25 +182,39 @@ namespace RiversRestored.Patches
                     BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
                     null, Type.EmptyTypes, null);
 
-                int touched = 0, recomputed = 0;
+                int examined = 0, activated = 0;
                 foreach (var area in grid)
                 {
                     if (area == null) continue;
-                    inUseProp?.SetValue(area, true);
-                    touched++;
 
-                    // Recompute only areas with no spawn points (the cut-off
-                    // ones). Areas that already have points keep theirs.
+                    // ONLY the cut-off (empty) areas — those a river locked out at gen — should be repaired.
+                    // Areas that already have spawn points are left completely untouched. (Previously inUse
+                    // was set on EVERY area before this check, which flagged the whole grid active and made the
+                    // daily respawn loop blanket the entire map with deer in a uniform grid — the "deer nodes
+                    // everywhere" bug. The recompute was already correctly scoped to empties; inUse wasn't.)
                     var pts = allSpawnPtsField?.GetValue(area) as ICollection;
-                    if ((pts == null || pts.Count == 0) && calcMI != null)
+                    if (pts != null && pts.Count > 0) continue; // already populated — keep its natural state
+
+                    // Recompute FIRST, then activate only if it actually produced points. An area can be
+                    // empty for two reasons: river-isolated (the smart bypass now validates its points →
+                    // it gains some → activate) or town-covered (every point is building-blocked, the
+                    // bypass no longer blesses those → still 0 points → LEAVE inUse=false so the daily
+                    // respawn loop never restocks deer inside the walls).
+                    examined++;
+                    if (calcMI != null)
                     {
-                        try { calcMI.Invoke(area, null); recomputed++; }
-                        catch { }
+                        try { calcMI.Invoke(area, null); } catch { }
+                    }
+                    var newPts = allSpawnPtsField?.GetValue(area) as ICollection;
+                    if (newPts != null && newPts.Count > 0)
+                    {
+                        inUseProp?.SetValue(area, true);
+                        activated++;
                     }
                 }
 
                 _repairedThisScene = true;
-                Log($"Wildlife river bypass: flagged inUse on {touched} spawn area(s), recomputed {recomputed} empty one(s) — deer can now repopulate cut-off regions.");
+                Log($"Wildlife river bypass: examined {examined} empty spawn area(s), activated {activated} river-isolated one(s) ({examined - activated} town-covered left dormant).");
             }
             catch (Exception ex)
             {
