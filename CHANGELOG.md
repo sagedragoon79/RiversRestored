@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.2 — 2026-07-28
+
+### Performance
+
+- **Main-menu stutter/jitter fixed** ([Plugin.cs](Plugin.cs)). `OnUpdate`'s `FindObjectOfType<TerrainGenerator>` fallback ran every 0.5s even at the main menu, where `RiverSettingsPatch.CachedGenerator` is always null. Profiling (FFPerfProbe) measured each scan at **250–320 ms** against the menu vista's objects — two quarter-second stalls per second, i.e. the choppy menu players kept reporting (Workshop v1.5.6 has this too). The fallback is now gated on a new `AnyTerrainSceneLoaded()` check (name-based scan of all loaded scenes for `"Map"`/`"Frontier"`) after the existing throttle, so it never runs at the pure main menu where no terrain exists. Menu returns to a locked 60 FPS; seed preview (which additively loads its own `Map` scene) is unaffected. The check reads scene **names across all loaded scenes** rather than the active scene's build index, avoiding the additive-scene trap that broke an earlier gate.
+
 ## v1.6.1 — 2026-06-27
 
 ### Fixed

@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.6.1", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.6.2", "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -1235,6 +1235,24 @@ namespace RiversRestored
         private bool _dumpedSaveManager = false;
         private float _nextGeneratorScanTime = 0f;
 
+        /// <summary>True when any loaded (or loading) scene is a terrain-bearing
+        /// one — 'Map' (additive: gameplay terrain AND the seed-preview worker's
+        /// copy) or 'Frontier' (gameplay root). Cheap: a name loop over
+        /// SceneManager's scene list, no object scans. Used to gate the
+        /// FindObjectOfType&lt;TerrainGenerator&gt; fallback so it can never run on
+        /// the main menu, where each scan costs 250-320ms and caused visible
+        /// menu jitter.</summary>
+        private static bool AnyTerrainSceneLoaded()
+        {
+            for (int i = 0; i < UnityEngine.SceneManagement.SceneManager.sceneCount; i++)
+            {
+                var s = UnityEngine.SceneManagement.SceneManager.GetSceneAt(i);
+                var n = s.name;
+                if (n == "Map" || n == "Frontier") return true;
+            }
+            return false;
+        }
+
         public override void OnUpdate()
         {
             if (!RiversEnabled.Value) return;
@@ -1254,17 +1272,26 @@ namespace RiversRestored
                 }
 
                 // Prefer the cached generator from hooks. When it's null we may
-                // be on the main menu OR mid-load; the 0.5s throttle keeps the
-                // FindObjectOfType fallback cheap in both cases. (A prior
-                // buildIndex<2 gate here wrongly returned during gameplay — the
-                // active scene is 'Frontier' (idx 1), not the additively-loaded
-                // 'Map' (idx 2) — so OnUpdate never ran in-game. Throttle only.)
+                // be on the main menu OR mid-load. The FindObjectOfType fallback
+                // is NOT cheap despite the 0.5s throttle — profiling (FFPerfProbe,
+                // 2026-07-28) measured 250-320ms PER SCAN against the main menu's
+                // vista objects, i.e. two quarter-second stalls every second =
+                // the menu jitter players kept reporting. So the fallback is now
+                // ALSO gated on a terrain-bearing scene actually existing:
+                // 'Map' (additively loaded — gameplay AND our seed-preview
+                // worker's copy) or 'Frontier' (gameplay root). At the pure main
+                // menu neither exists and there is no TerrainGenerator to find,
+                // so we skip entirely. (A prior buildIndex<2 gate wrongly keyed
+                // on the ACTIVE scene — 'Frontier' idx 1, not the additive 'Map'
+                // idx 2 — and killed OnUpdate in-game. Checking scene NAMES
+                // across ALL loaded scenes avoids that failure mode.)
                 var tg = Patches.RiverSettingsPatch.CachedGenerator;
                 if (tg == null)
                 {
                     float now = UnityEngine.Time.unscaledTime;
                     if (now < _nextGeneratorScanTime) return;
                     _nextGeneratorScanTime = now + 0.5f;
+                    if (!AnyTerrainSceneLoaded()) return;
                     tg = UnityEngine.Object.FindObjectOfType<TerrainGen.TerrainGenerator>();
                 }
                 if (tg != null && !_seenGenerator)
