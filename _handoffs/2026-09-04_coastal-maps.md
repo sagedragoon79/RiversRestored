@@ -1,9 +1,11 @@
 # Coastal Maps folded into Rivers Restored — v1.7.0 / Map Edge — v1.8.0 (2026-09-04)
 
 **State:** v1.7.0 passed the full test matrix in game, was fast-forwarded to `main` and tagged `v1.7.0`
-(`5e702e4`). v1.8.0 "Map Edge" (`6bd4fd9`, Debug build deployed to Mods 16:42) adds `BorderRingScale` (0.5)
-and `PlayableInset` (50 m), both on by default; its in-game test is pending, so it is NOT tagged. Nothing is
-pushed or on the Workshop yet.
+(`5e702e4`). v1.8.0 "Map Edge" (`6bd4fd9`) adds `BorderRingScale` (0.5) and `PlayableInset` (50 m), both on by
+default; it passed its Small-map test matrix on 2026-09-04 and is tagged `v1.8.0`, Release build deployed to
+Mods (18:07). Nothing is pushed or on the Workshop yet: `git push --tags`, `gh release create v1.8.0
+bin/Release/RiversRestored.dll`, then the Workshop upload with the two CHANGELOG entries (1.7.0 + 1.8.0) as
+patch notes and the refreshed STEAM_DESCRIPTION.md.
 
 ## v1.8.0 — what landed
 
