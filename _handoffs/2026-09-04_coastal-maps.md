@@ -1,7 +1,34 @@
-# Coastal Maps folded into Rivers Restored — v1.7.0 (2026-09-04)
+# Coastal Maps folded into Rivers Restored — v1.7.0 / Map Edge — v1.8.0 (2026-09-04)
 
-**State:** built and deployed to Mods from branch `coastal-maps` (commit `6a7fa76`, from tag `v1.6.2`).
-In-game test pending. Not merged to main, not tagged, not pushed, not on the Workshop.
+**State:** v1.7.0 passed the full test matrix in game, was fast-forwarded to `main` and tagged `v1.7.0`
+(`5e702e4`). v1.8.0 "Map Edge" (`6bd4fd9`, Debug build deployed to Mods 16:42) adds `BorderRingScale` (0.5)
+and `PlayableInset` (50 m), both on by default; its in-game test is pending, so it is NOT tagged. Nothing is
+pushed or on the Workshop yet.
+
+## v1.8.0 — what landed
+
+- `Patches/MapEdgePatches.cs`: prefix on `PreGameInitializer.GetPathingGridRect` (public static, decompile
+  100761) writes the private static `navMeshBuffer` (100690, vanilla 300f = 150 m per edge) from the current
+  plan on every call. Consumers of the rect: camera clamp (`size.x/2 − 55`, 60602), NavMesh surface bounds
+  (100797), AI grid width (100805, reads the static directly after BuildNavMesh), `MineralManager.Start`
+  (160811), `ForagingManager.OnGameInitializeEvent` (89712), tree/detail exclusion (490772+). A loading save
+  (`useSavedMap`) takes the inset from its sidecar or vanilla; anything else takes the pref.
+- Ring scale lives in the border mirror (`CoastPatches.RunBorderRing`): stamp size and height × scale, 0 = no
+  ring, same RNG calls per placed stamp. The mirror now runs whenever the plan is non-null (coast OR ring ≠ 1
+  OR inset ≠ 150), skipping stamps only on the coast edge when there is one.
+- `CoastPlan` gained `HasCoast`, `RingScale`, `PlayableInset`; sidecar v2 writes them; v1 files (1.7.0 and
+  the Coastal Kingdom prototype) read as `coast=true, ring=1, inset=150`, i.e. exactly how they were generated.
+- Known soft spot: `MineralManager.Start` runs before the save's `useSavedMap` flag is set, so on a loaded save
+  its one rect read uses the pref value. Cosmetic (mineral placement bounds).
+
+## v1.8.0 test matrix
+
+1. Small map, new game: half-size edge hills, buildable to ~50 m from the edge, camera travels closer, log
+   `[RR][Coast] Playable inset set to 50 m per edge` and `Border ring: N features stamped at scale 0.50`.
+2. Save → reload: same grid (buildings at the edge still reachable), same ring.
+3. Load a 1.7.0 coast save and a pre-1.7.0 save: `Playable inset set to 150 m`, vanilla ring, untouched.
+4. Rivers on with a coast: river to sea still works; RR flow bias still re-carved before Stage 38.
+5. Watch a raid or trader arrival: spawns now sit ~50 m from buildable land.
 
 ## What landed
 
