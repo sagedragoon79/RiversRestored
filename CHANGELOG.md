@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.7.0 — 2026-09-04
+
+### Added
+
+- **Coastal Maps** ([Patches/CoastPatches.cs](Patches/CoastPatches.cs), [Patches/CoastCarver.cs](Patches/CoastCarver.cs), new pref **Coastal Maps Enabled**, default ON). One edge of every new map becomes open sea. Farthest Frontier ships a complete ocean pathway that vanilla never triggers: any below-water basin touching the map edge with enough shoreline is classified as the ocean water type, and rendering, shore points, fishing, ambient audio, pathing, and map-edge arrivals already handle it. Two things kept oceans from existing, the border mountain ring stamped on all four edges and the ocean type's `shorelinePoints` of 900000. The feature mirrors the ring without the stamps on the coastal edge, lowers a band of terrain along it below the water plane before the water classification pass, and lowers the thresholds. Vanilla does the rest: sea water material, sand shoreline, ocean detail collection, ocean ambience.
+  - Prefs: **Coast Edge** (Random from seed, or West / East / South / North as shown on the in-game map), **Coastline Distance** (300 m), **Beach Width** (40 m), **Shelf Width** (90 m), **Seabed Depth Factor** (0.5), **Coastline Jitter Amplitude / Wavelength** (90 m every 700 m), **Ocean Threshold Override** (ON).
+  - Independent of **Rivers Enabled**: turn rivers off and still get a coast.
+  - **Save/reload** ([Patches/CoastPersistence.cs](Patches/CoastPersistence.cs)): a small `Save/{saveName}.coast` text sidecar records the plan; the generator replay on load carves the same coast again. It carries the map seed and is ignored when it does not match, and a save without one is left exactly as it was. A coast save loaded without the mod keeps its basin mesh but the water reverts to land classification (FF logs a harmless Stage 5 seed-checkpoint error).
+- **Rivers drain to the sea** ([Patches/RiverToSea.cs](Patches/RiverToSea.cs), new pref **Rivers Drained to the Sea**, default 1). Vanilla Stage 38 only ever aims rivers at perimeter points above the water plane, so a coastal edge was never a target. A prefix on `RecurseRiver` aims the first river at the nearest coastal perimeter point and vetoes walks that would end in a lake or pond, so the river reaches the sea or, after 300 attempts, vanilla places the rest. The flow bias is re-applied to the coast right before Stage 38 so walks stop at the true shoreline.
+- Ported from SageDragoon's standalone Coastal Kingdom prototype (v0.3.3); that repo stays the home for future ocean work.
+
+### Notes
+
+- **Flow bias strength** above about 0.5 now visibly floods the low side of a coast map (the tilt reaches metres at 0.9). 0.1 to 0.3 is the useful band.
+- The lake fish sizing (v1.6.0) treats the sea as one very large lake, so a coastal Fishing Shack never depletes its stock. Left as is on purpose.
+
 ## v1.6.2 — 2026-07-28
 
 ### Performance

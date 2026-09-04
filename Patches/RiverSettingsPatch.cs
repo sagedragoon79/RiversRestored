@@ -515,6 +515,10 @@ namespace RiversRestored.Patches
                 // to run BEFORE Stage 38 invokes its pathfinder.
                 ApplyRiverFlowBias(__instance);
 
+                // Coastal Maps: the bias can lift or dip the carved coast; put it
+                // back before the river walk so rivers stop at the true shoreline.
+                CoastPatches.ReapplyForRivers(__instance);
+
                 _miStage38.Invoke(__instance, null);
                 RiversRestoredMod.Log.Msg(
                     "[RR] <<< Stage 38 injection completed without exception.");

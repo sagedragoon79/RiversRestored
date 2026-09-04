@@ -95,6 +95,39 @@ namespace RiversRestored
                 RiversRestoredMod.RiversEnabled.Value
                 && (RiversRestoredMod.GranularSettings?.Value ?? false);
 
+            // === Coastal Maps (v1.7.0) === — independent of the rivers master toggle.
+            Func<bool> coast = () => RiversRestoredMod.CoastalMapsEnabled?.Value ?? false;
+            Reg("Coastal Maps", RiversRestoredMod.CoastalMapsEnabled,
+                NewMeta("Coastal Maps Enabled", RiversRestoredMod.CoastalMapsEnabled.Description,
+                    restartRequired: true, order: 0));
+            Reg("Coastal Maps", RiversRestoredMod.CoastEdgeChoice,
+                NewMeta("Coast Edge", RiversRestoredMod.CoastEdgeChoice.Description,
+                    order: 10, visibleWhen: coast));
+            Reg("Coastal Maps", RiversRestoredMod.CoastlineDistance,
+                NewMeta("Coastline Distance (m)", RiversRestoredMod.CoastlineDistance.Description,
+                    min: 100f, max: 500f, order: 20, visibleWhen: coast));
+            Reg("Coastal Maps", RiversRestoredMod.CoastBeachWidth,
+                NewMeta("Beach Width (m)", RiversRestoredMod.CoastBeachWidth.Description,
+                    min: 5f, max: 150f, order: 30, visibleWhen: coast));
+            Reg("Coastal Maps", RiversRestoredMod.CoastShelfWidth,
+                NewMeta("Shelf Width (m)", RiversRestoredMod.CoastShelfWidth.Description,
+                    min: 10f, max: 300f, order: 40, visibleWhen: coast));
+            Reg("Coastal Maps", RiversRestoredMod.CoastSeabedDepth,
+                NewMeta("Seabed Depth Factor", RiversRestoredMod.CoastSeabedDepth.Description,
+                    min: 0.05f, max: 1f, order: 50, visibleWhen: coast));
+            Reg("Coastal Maps", RiversRestoredMod.CoastJitterAmplitude,
+                NewMeta("Coastline Jitter Amplitude (m)", RiversRestoredMod.CoastJitterAmplitude.Description,
+                    min: 0f, max: 150f, order: 60, visibleWhen: coast));
+            Reg("Coastal Maps", RiversRestoredMod.CoastJitterWavelength,
+                NewMeta("Coastline Jitter Wavelength (m)", RiversRestoredMod.CoastJitterWavelength.Description,
+                    min: 100f, max: 1500f, order: 70, visibleWhen: coast));
+            Reg("Coastal Maps", RiversRestoredMod.CoastRiversToSea,
+                NewMeta("Rivers Drained to the Sea", RiversRestoredMod.CoastRiversToSea.Description,
+                    min: 0, max: 8, order: 80, visibleWhen: coast));
+            Reg("Coastal Maps", RiversRestoredMod.CoastOceanThresholdOverride,
+                NewMeta("Ocean Threshold Override", RiversRestoredMod.CoastOceanThresholdOverride.Description,
+                    order: 90, visibleWhen: coast));
+
             // === Master === — basic-tier choices, always visible (or gated
             // only by master toggle). Order field controls KC's per-row sort.
             Reg("Master", RiversRestoredMod.RiversEnabled,

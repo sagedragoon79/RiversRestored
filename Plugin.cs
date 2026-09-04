@@ -23,7 +23,7 @@ using MelonLoader;
 //  IsInRiver are already wired into vanilla fishing shacks).
 // ─────────────────────────────────────────────────────────────────────────────
 
-[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", "1.6.2", "SageDragoon")]
+[assembly: MelonInfo(typeof(RiversRestored.RiversRestoredMod), "Rivers Restored", RiversRestored.RiversRestoredMod.Version, "SageDragoon")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace RiversRestored
@@ -88,16 +88,45 @@ namespace RiversRestored
         AlpineValleys,
     }
 
+    /// <summary>Which map edge becomes the coast (Coastal Maps, v1.7.0), named as
+    /// the in-game map shows them (north up, east on the right). In heightNoise
+    /// coordinates that is West = maximum X, East = minimum X, North = minimum Z,
+    /// South = maximum Z: the game displays both axes reversed relative to the
+    /// array indices (verified in game, September 3, 2026).</summary>
+    public enum CoastEdge
+    {
+        /// <summary>Pick an edge from the map seed (stable per seed).</summary>
+        Random,
+        West,
+        East,
+        South,
+        North,
+    }
+
     public class RiversRestoredMod : MelonMod
     {
+        public const string Version = "1.7.0";
+
         public static RiversRestoredMod Instance { get; private set; } = null!;
         public static MelonLogger.Instance Log => Instance.LoggerInstance;
         public static new HarmonyLib.Harmony HarmonyInstance { get; private set; } = null!;
 
         // ── Master toggle ───────────────────────────────────────────────────
-        /// <summary>Kill-switch. When false, the mod does nothing — vanilla
-        /// behavior resumes.</summary>
+        /// <summary>Kill-switch. When false, the river side of the mod does
+        /// nothing — vanilla behavior resumes. Coastal Maps has its own switch.</summary>
         public static MelonPreferences_Entry<bool> RiversEnabled { get; private set; } = null!;
+
+        // ── Coastal Maps (v1.7.0) — independent of RiversEnabled ───────────
+        public static MelonPreferences_Entry<bool> CoastalMapsEnabled { get; private set; } = null!;
+        public static MelonPreferences_Entry<CoastEdge> CoastEdgeChoice { get; private set; } = null!;
+        public static MelonPreferences_Entry<float> CoastlineDistance { get; private set; } = null!;
+        public static MelonPreferences_Entry<float> CoastBeachWidth { get; private set; } = null!;
+        public static MelonPreferences_Entry<float> CoastShelfWidth { get; private set; } = null!;
+        public static MelonPreferences_Entry<float> CoastSeabedDepth { get; private set; } = null!;
+        public static MelonPreferences_Entry<float> CoastJitterAmplitude { get; private set; } = null!;
+        public static MelonPreferences_Entry<float> CoastJitterWavelength { get; private set; } = null!;
+        public static MelonPreferences_Entry<bool> CoastOceanThresholdOverride { get; private set; } = null!;
+        public static MelonPreferences_Entry<int> CoastRiversToSea { get; private set; } = null!;
 
         // ── Preset chooser (drives all granular settings when != Custom) ────
         /// <summary>Biome-style preset selector. When set to any value except
@@ -1015,6 +1044,79 @@ namespace RiversRestored
                              "for diagnosis. Leave OFF for normal play — the log gets " +
                              "noisy fast.");
 
+            // ── Coastal Maps (v1.7.0) ───────────────────────────────────────
+            // Independent of RiversEnabled: the coast works with rivers off.
+            // Ported from the standalone Coastal Kingdom prototype (SageDragoon,
+            // September 2026); that repo stays the home for future ocean work.
+            CoastalMapsEnabled = cat.CreateEntry("CoastalMapsEnabled", true,
+                display_name: "Coastal Maps Enabled",
+                description: "When ON (default), every NEW map gets one coastal edge: the border " +
+                             "mountains on that edge are removed and the terrain there is lowered " +
+                             "below the water plane so the game classifies it as ocean, with the " +
+                             "game's own sea water, sand shoreline, and ocean ambience. A coast map " +
+                             "keeps its coast across reloads through a small .coast file next to the " +
+                             "save; saves made without a coast are never changed. Works with Rivers " +
+                             "Enabled off. Requires a restart to change.");
+
+            CoastEdgeChoice = cat.CreateEntry("CoastEdge", CoastEdge.Random,
+                display_name: "Coast Edge",
+                description: "Which map edge becomes the coast.\n" +
+                             "  Random - chosen from the map seed (same seed, same edge)\n" +
+                             "  West / East / South / North - force an edge\n" +
+                             "Directions match the in-game map (north up, east on the right).");
+
+            CoastlineDistance = cat.CreateEntry("CoastlineDistance", 300f,
+                display_name: "Coastline Distance (m from map edge)",
+                description: "How far in from the heightmap edge the shoreline sits, in world units. " +
+                             "The playable area starts 150 in from the edge and the camera clamps " +
+                             "about 205 in, so values near 200 keep the sea at the visible edge of " +
+                             "the map; 300 (default) brings a usable stretch of sea into play.");
+
+            CoastBeachWidth = cat.CreateEntry("CoastBeachWidth", 40f,
+                display_name: "Beach Width (m)",
+                description: "Width of the ramp from the shoreline up to the natural terrain, in " +
+                             "world units. Wider = gentler beach; narrower = steeper banks.");
+
+            CoastShelfWidth = cat.CreateEntry("CoastShelfWidth", 90f,
+                display_name: "Shelf Width (m)",
+                description: "Distance from the shoreline out to full depth, in world units. The " +
+                             "seabed slopes down over this distance, then stays flat to the map edge.");
+
+            CoastSeabedDepth = cat.CreateEntry("CoastSeabedDepth", 0.5f,
+                display_name: "Seabed Depth Factor (0-1)",
+                description: "How far below the water plane the open sea floor is carved, as a " +
+                             "fraction of the water plane's height above the terrain floor. " +
+                             "0.1 = shallow flats, 0.5 = default, 1.0 = as deep as the game's water " +
+                             "depth curve allows (the curve reshapes the final seabed at Stage 50).");
+
+            CoastJitterAmplitude = cat.CreateEntry("CoastJitterAmplitude", 90f,
+                display_name: "Coastline Jitter Amplitude (m)",
+                description: "How far the shoreline wanders in and out along the coast, in world " +
+                             "units. 0 = straight coast; 90 (default) gives natural bays and " +
+                             "headlands. Seeded from the map seed.");
+
+            CoastJitterWavelength = cat.CreateEntry("CoastJitterWavelength", 700f,
+                display_name: "Coastline Jitter Wavelength (m)",
+                description: "Distance along the coast between major bays, in world units. " +
+                             "Smaller = busier coastline. No effect when amplitude is 0.");
+
+            CoastOceanThresholdOverride = cat.CreateEntry("CoastOceanThresholdOverride", true,
+                display_name: "Ocean Threshold Override",
+                description: "The game ships its ocean water type with shorelinePoints = 900000, " +
+                             "which is what keeps vanilla from ever classifying an ocean. When ON " +
+                             "(default), both ocean thresholds are lowered to half the heightmap " +
+                             "resolution at generation time so a full-edge coast qualifies; lakes " +
+                             "never can, because they do not touch enough map-edge cells. Turn OFF " +
+                             "only to see the vanilla classification (the coast then becomes a lake).");
+
+            CoastRiversToSea = cat.CreateEntry("CoastRiversToSea", 1,
+                display_name: "Rivers Drained to the Sea",
+                description: "How many rivers are steered to end in the sea on a coast map. " +
+                             "0 = leave river targets alone. A steered river starts at a land edge " +
+                             "like any other river, heads for the coast, and stops at the first sea " +
+                             "cell. Walks that would end in a lake or pond are rejected and retried; " +
+                             "after 300 attempts the remaining rivers are placed the vanilla way.");
+
             // ── Per-preset live-tunable entries ─────────────────────────────
             // Create one MelonPreferences category per non-Custom preset, each
             // with a full mirror of the 13 tunable fields. Defaults seed from
@@ -1063,8 +1165,13 @@ namespace RiversRestored
                 // its gameplay scene transition. Without this, FF can
                 // adopt the preview's mutated TGC and hang at ~85%.
                 Patches.StartNewGamePatch.Apply(HarmonyInstance);
-                Log.Msg($"[RR] Rivers Restored 1.4.6 loaded. NumRivers={NumRivers.Value}, " +
-                        $"RiversEnabled={RiversEnabled.Value}");
+                // Coastal Maps (v1.7.0): installed regardless of RiversEnabled;
+                // each hook checks CoastalMapsEnabled itself.
+                Patches.CoastPatches.Apply(HarmonyInstance);
+                Patches.CoastPersistence.Apply(HarmonyInstance);
+                Patches.RiverToSea.Apply(HarmonyInstance);
+                Log.Msg($"[RR] Rivers Restored {Version} loaded. NumRivers={NumRivers.Value}, " +
+                        $"RiversEnabled={RiversEnabled.Value}, CoastalMapsEnabled={CoastalMapsEnabled.Value}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.
                 KeepClarityIntegration.TryRegisterAll();

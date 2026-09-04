@@ -5,9 +5,17 @@ Farthest Frontier already includes a sophisticated river generation system — V
 
 New maps now generate winding rivers terminating in lakes or spanning the map edge to edge, with carved beds, sloped banks, flowing water animation, and full fishing support.
 
+[b]New in v1.7.0: Coastal Maps.[/b] One edge of every new map is now open sea — the game's own ocean water, sand shoreline, and surf ambience, which vanilla never switches on — and the first river drains into it. Off switch and full tuning in the settings; works with rivers turned off too.
+
 [b]New in v1.4.0:[/b] live map preview that updates the moment you change a setting, plus per-biome slider tuning for fine-grained control over river shape and density.
 [hr][/hr]
 [h2]What You Get[/h2]
+[b]🏝 Coastal Maps[/b] [i](v1.7.0)[/i]
+Farthest Frontier ships a complete ocean system that no vanilla map ever triggers. Rivers Restored opens one map edge and lowers the land there below the water plane, and the game does the rest: sea water, sandy beaches with their own shoreline props, ocean ambience, fishable shore. Pick the edge (or let the seed decide), shape the shoreline with bays and headlands, set the beach and shelf widths, and choose how far the sea reaches into the map. The coast survives save and reload, saves made without it are never touched, and the whole feature has its own on/off switch independent of rivers.
+
+[b]🌊➡🏝 Rivers Drain to the Sea[/b] [i](v1.7.0)[/i]
+On a coast map the first river is steered to the shoreline instead of a land edge, and it refuses to end in a pond on the way. Set how many rivers should reach the sea, or none.
+
 [b]🌊 Winding Rivers[/b]
 New maps generate between 1 and 8 rivers depending on map size and terrain. Each river winds naturally between water bodies — lakes, ocean coastlines, or both — following the landscape rather than cutting straight lines through it.
 
