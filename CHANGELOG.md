@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.8.0 — 2026-09-04
+
+### Added
+
+- **Map Edge: border ring scale** ([Patches/CoastPatches.cs](Patches/CoastPatches.cs), new pref **Border Mountain Ring Scale**, default 0.5). The mountain ring the game stamps around every map edge is scaled in size and height; 1 = vanilla, 0 = no ring. Half-scale hills stop spilling into buildable land. Applies with or without a coast.
+- **Map Edge: playable inset** ([Patches/MapEdgePatches.cs](Patches/MapEdgePatches.cs), new pref **Playable Inset**, default 50 m). Vanilla keeps 150 m per edge out of bounds through a single private static, `PreGameInitializer.navMeshBuffer`, which sizes the AI grid, the NavMesh bake volume, the camera clamp, and the mineral, foraging, and tree bounds through `GetPathingGridRect`. A prefix on that method sets the static from the current map-edge plan on every call, so every consumer agrees whatever order the scene starts in. On a Small map the buildable square grows from 77% to 92% of the terrain.
+- **Sidecar v2**: the `.coast` file now records the ring scale and inset too, so a reload rebuilds the same grid and ring. Version-1 files (1.7.0) describe coast maps generated with the vanilla ring and inset and are read as exactly that; saves without a sidecar keep vanilla values.
+
+### Notes
+
+- Arrivals (raiders, immigrants, traders) still spawn on the fixed grid at the terrain edge, so with a 50 m inset they appear closer to buildable land than before.
+- `MineralManager.Start` reads the pathing rect before the save's sidecar is known; on a loaded save its mineral bounds use the preference value for that one call. Cosmetic.
+
 ## v1.7.0 — 2026-09-04
 
 ### Added

@@ -5,6 +5,8 @@ Farthest Frontier already includes a sophisticated river generation system — V
 
 New maps now generate winding rivers terminating in lakes or spanning the map edge to edge, with carved beds, sloped banks, flowing water animation, and full fishing support.
 
+[b]New in v1.8.0: Map Edge.[/b] Shrink the mountain ring around the map (or remove it) and reclaim the out-of-bounds strip: the buildable area now starts 50 m from the edge instead of 150 m, which turns a Small map from 77% usable land into 92%. Both tunable.
+
 [b]New in v1.7.0: Coastal Maps.[/b] One edge of every new map is now open sea — the game's own ocean water, sand shoreline, and surf ambience, which vanilla never switches on — and the first river drains into it. Off switch and full tuning in the settings; works with rivers turned off too.
 
 [b]New in v1.4.0:[/b] live map preview that updates the moment you change a setting, plus per-biome slider tuning for fine-grained control over river shape and density.
@@ -12,6 +14,9 @@ New maps now generate winding rivers terminating in lakes or spanning the map ed
 [h2]What You Get[/h2]
 [b]🏝 Coastal Maps[/b] [i](v1.7.0)[/i]
 Farthest Frontier ships a complete ocean system that no vanilla map ever triggers. Rivers Restored opens one map edge and lowers the land there below the water plane, and the game does the rest: sea water, sandy beaches with their own shoreline props, ocean ambience, fishable shore. Pick the edge (or let the seed decide), shape the shoreline with bays and headlands, set the beach and shelf widths, and choose how far the sea reaches into the map. The coast survives save and reload, saves made without it are never touched, and the whole feature has its own on/off switch independent of rivers.
+
+[b]⛰ Map Edge[/b] [i](v1.8.0)[/i]
+The game hides the end of the world behind a ring of mountains and keeps 150 m of every edge out of bounds. Scale that ring down (half size by default) or switch it off, and pull the out-of-bounds line in to 50 m. Small maps gain the most: a quarter of the terrain comes back into play, and the camera follows.
 
 [b]🌊➡🏝 Rivers Drain to the Sea[/b] [i](v1.7.0)[/i]
 On a coast map the first river is steered to the shoreline instead of a land edge, and it refuses to end in a pond on the way. Set how many rivers should reach the sea, or none.

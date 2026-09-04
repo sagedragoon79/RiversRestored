@@ -96,9 +96,8 @@ namespace RiversRestored.Patches
         /// coast (no sidecar) is never altered.</summary>
         internal static CoastPlan? ResolvePlan(TerrainGenerator tg)
         {
-            if (!(RiversRestoredMod.CoastalMapsEnabled?.Value ?? false)) return null;
-            if (!tg.Data.useSavedMap) return CoastPlan.Build(tg);
-            return CoastPersistence.PlanForLoadingSave(tg);
+            if (tg.Data.useSavedMap) return CoastPersistence.PlanForLoadingSave(tg);
+            return CoastPlan.PrefsWantEdgeChanges() ? CoastPlan.Build(tg) : null;
         }
 
         /// <summary>Called by the river injection after the flow bias and before
@@ -161,7 +160,8 @@ namespace RiversRestored.Patches
             // after starting, or the ring would be stamped twice.
             try
             {
-                RunBorderRingSkippingEdge(__instance, plan.Edge, borderFeatures, featuresUsed);
+                MapEdgePatches.ApplyInset(plan.PlayableInset);
+                RunBorderRing(__instance, plan.HasCoast ? plan.Edge : (CoastEdge?)null, plan.RingScale, borderFeatures, featuresUsed);
             }
             catch (Exception ex)
             {
@@ -172,14 +172,21 @@ namespace RiversRestored.Patches
 
         /// <summary>Line-for-line mirror of vanilla <c>GenerateBorderFeatures</c>
         /// (same loop order, same RNG calls per placed stamp) that skips the
-        /// stamps whose grid point lies on the coastal edge.</summary>
-        private static void RunBorderRingSkippingEdge(TerrainGenerator tg, CoastEdge edge,
+        /// stamps whose grid point lies on the coastal edge (if any) and scales
+        /// the remaining stamps' size and height by <paramref name="scale"/>.
+        /// A scale of 0 places no ring at all.</summary>
+        private static void RunBorderRing(TerrainGenerator tg, CoastEdge? skipEdge, float scale,
             List<TerrainFeature> borderFeatures, List<TerrainGenerator.FeatureEntry> featuresUsed)
         {
             var list = new List<TerrainFeature>(borderFeatures);
             if (list.Count == 0)
             {
                 CoastLog.Msg("This theme has no border features; nothing to skip.");
+                return;
+            }
+            if (scale <= 0.001f)
+            {
+                CoastLog.Msg("Border ring scale is 0: no edge mountains placed.");
                 return;
             }
 
@@ -200,7 +207,7 @@ namespace RiversRestored.Patches
                     if (!(west || south || east || north)) continue;
 
                     bool onCoast;
-                    switch (edge)
+                    switch (skipEdge)
                     {
                         case CoastEdge.West:  onCoast = west;  break;
                         case CoastEdge.East:  onCoast = east;  break;
@@ -212,8 +219,9 @@ namespace RiversRestored.Patches
 
                     int index = rng.Range(0, list.Count - 1);
                     TerrainFeature feature = list[index];
-                    float size = rng.Range(feature.minSize, feature.maxSize);
-                    _paintFeature!.Invoke(tg, new object[] { x, z, feature, size, feature.height });
+                    float size = rng.Range(feature.minSize, feature.maxSize) * scale;
+                    float height = feature.height * scale;
+                    _paintFeature!.Invoke(tg, new object[] { x, z, feature, size, height });
                     featuresUsed.Add(new TerrainGenerator.FeatureEntry
                     {
                         feature = feature,
@@ -225,7 +233,8 @@ namespace RiversRestored.Patches
                 }
             }
 
-            CoastLog.Msg($"Border ring: {placed} features stamped, {skipped} skipped on the {edge} edge " +
+            string skipText = skipEdge.HasValue ? $", {skipped} skipped on the {skipEdge.Value} edge" : "";
+            CoastLog.Msg($"Border ring: {placed} features stamped at scale {scale:F2}{skipText} " +
                          $"(buffer {buffer}, spacing {spacing}, far {far})");
         }
 
@@ -241,8 +250,11 @@ namespace RiversRestored.Patches
                 // describes: a coast plan, or null for a vanilla map.
                 CoastPersistence.CurrentPlan = plan;
                 RiverToSea.BeginGeneration();
-                if (plan == null)
+                if (plan != null) MapEdgePatches.ApplyInset(plan.PlayableInset);
+                if (plan == null || !plan.HasCoast)
                 {
+                    // Ring scale and inset only: nothing to carve, nothing for the
+                    // coast reports or the river steering to act on.
                     _applied.Remove(id);
                     return;
                 }

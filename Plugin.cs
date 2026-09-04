@@ -105,7 +105,7 @@ namespace RiversRestored
 
     public class RiversRestoredMod : MelonMod
     {
-        public const string Version = "1.7.0";
+        public const string Version = "1.8.0";
 
         public static RiversRestoredMod Instance { get; private set; } = null!;
         public static MelonLogger.Instance Log => Instance.LoggerInstance;
@@ -127,6 +127,10 @@ namespace RiversRestored
         public static MelonPreferences_Entry<float> CoastJitterWavelength { get; private set; } = null!;
         public static MelonPreferences_Entry<bool> CoastOceanThresholdOverride { get; private set; } = null!;
         public static MelonPreferences_Entry<int> CoastRiversToSea { get; private set; } = null!;
+
+        // ── Map Edge (v1.8.0) — ring scale and playable inset, coast or not ──
+        public static MelonPreferences_Entry<float> BorderRingScale { get; private set; } = null!;
+        public static MelonPreferences_Entry<float> PlayableInset { get; private set; } = null!;
 
         // ── Preset chooser (drives all granular settings when != Custom) ────
         /// <summary>Biome-style preset selector. When set to any value except
@@ -1117,6 +1121,23 @@ namespace RiversRestored
                              "cell. Walks that would end in a lake or pond are rejected and retried; " +
                              "after 300 attempts the remaining rivers are placed the vanilla way.");
 
+            // ── Map Edge (v1.8.0) ───────────────────────────────────────────
+            BorderRingScale = cat.CreateEntry("BorderRingScale", 0.5f,
+                display_name: "Border Mountain Ring Scale (0-1)",
+                description: "Scales the size and height of the mountain ring the game stamps " +
+                             "around the map edge. 1 = vanilla ring, 0.5 (default) = half-size, " +
+                             "half-height edge hills that no longer spill into buildable land, " +
+                             "0 = no ring at all (the terrain simply ends at the out-of-bounds " +
+                             "strip). New maps only; a map keeps the ring it was generated with.");
+
+            PlayableInset = cat.CreateEntry("PlayableInset", 50f,
+                display_name: "Playable Inset (m from map edge)",
+                description: "How far in from the terrain edge the buildable, walkable world starts. " +
+                             "Vanilla is 150 m on every edge, which costs about a quarter of a Small " +
+                             "map; 50 m (default) gives that land back and lets the camera travel " +
+                             "closer to the edge. Recorded per save, so a reload rebuilds the same " +
+                             "grid. New maps only.");
+
             // ── Per-preset live-tunable entries ─────────────────────────────
             // Create one MelonPreferences category per non-Custom preset, each
             // with a full mirror of the 13 tunable fields. Defaults seed from
@@ -1170,8 +1191,10 @@ namespace RiversRestored
                 Patches.CoastPatches.Apply(HarmonyInstance);
                 Patches.CoastPersistence.Apply(HarmonyInstance);
                 Patches.RiverToSea.Apply(HarmonyInstance);
+                Patches.MapEdgePatches.Apply(HarmonyInstance);
                 Log.Msg($"[RR] Rivers Restored {Version} loaded. NumRivers={NumRivers.Value}, " +
-                        $"RiversEnabled={RiversEnabled.Value}, CoastalMapsEnabled={CoastalMapsEnabled.Value}");
+                        $"RiversEnabled={RiversEnabled.Value}, CoastalMapsEnabled={CoastalMapsEnabled.Value}, " +
+                        $"BorderRingScale={BorderRingScale.Value:F2}, PlayableInset={PlayableInset.Value:F0}");
 
                 // Optional: register with Keep Clarity's settings panel if installed.
                 KeepClarityIntegration.TryRegisterAll();

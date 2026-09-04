@@ -128,6 +128,14 @@ namespace RiversRestored
                 NewMeta("Ocean Threshold Override", RiversRestoredMod.CoastOceanThresholdOverride.Description,
                     order: 90, visibleWhen: coast));
 
+            // === Map Edge (v1.8.0) === — applies with or without a coast.
+            Reg("Map Edge", RiversRestoredMod.BorderRingScale,
+                NewMeta("Border Mountain Ring Scale", RiversRestoredMod.BorderRingScale.Description,
+                    min: 0f, max: 1f, order: 0));
+            Reg("Map Edge", RiversRestoredMod.PlayableInset,
+                NewMeta("Playable Inset (m)", RiversRestoredMod.PlayableInset.Description,
+                    min: 0f, max: 150f, order: 10));
+
             // === Master === — basic-tier choices, always visible (or gated
             // only by master toggle). Order field controls KC's per-row sort.
             Reg("Master", RiversRestoredMod.RiversEnabled,
