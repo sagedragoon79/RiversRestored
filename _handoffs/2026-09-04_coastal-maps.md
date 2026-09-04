@@ -78,3 +78,9 @@ Merge `coastal-maps` → `main`, `dotnet build -c Release -p:Platform=x64`, stag
 `v1.7.0`, `gh release create v1.7.0 <DLL>`, Workshop upload with the CHANGELOG entry as patch notes, refresh the
 Steam description (already updated in `STEAM_DESCRIPTION.md`). The standalone `CoastalKingdom.dll` was removed
 from Mods on 2026-09-04; never run both.
+
+## Shipped (2026-09-04)
+
+`main` pushed (`de24ff9..07006fc`), tags `v1.7.0` + `v1.8.0` pushed, GitHub release **v1.8.0** created with
+`bin/Release/net46/RiversRestored.dll` (315 KB), notes covering 1.7.0 + 1.8.0. Remaining: the Workshop upload
+(still v1.5.6 there — one upload carries 1.6.0 → 1.8.0; Steam BBCode note delivered in chat).
